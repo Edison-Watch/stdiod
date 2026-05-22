@@ -1,0 +1,130 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EdisonStdiodTunnelProtocol",
+  "description": "Wire protocol for the stdiod ↔ backend WebSocket tunnel. Symmetric mcp_frame envelope; opaque to the transport layer. See stdiod/ARCHITECTURE.md.",
+  "definitions": {
+    "ClientHello": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["client_hello"] },
+        "protocol_version": { "type": "integer", "minimum": 1 },
+        "device_id": { "type": "string" },
+        "hostname": { "type": "string" },
+        "label": { "type": "string" },
+        "os": { "type": "string", "enum": ["macos", "linux", "windows"] },
+        "client_version": { "type": "string" },
+        "currently_running": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": [
+        "type",
+        "protocol_version",
+        "device_id",
+        "hostname",
+        "label",
+        "os",
+        "client_version",
+        "currently_running"
+      ],
+      "additionalProperties": false
+    },
+    "ServerHello": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["server_hello"] },
+        "protocol_version": { "type": "integer", "minimum": 1 },
+        "servers": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/DesiredServer" }
+        }
+      },
+      "required": ["type", "protocol_version", "servers"],
+      "additionalProperties": false
+    },
+    "DesiredServer": {
+      "type": "object",
+      "properties": {
+        "server_id": { "type": "string" },
+        "name": { "type": "string" },
+        "command": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "working_dir": { "type": ["string", "null"] },
+        "enabled": { "type": "boolean" }
+      },
+      "required": ["server_id", "name", "command", "args", "env", "enabled"],
+      "additionalProperties": false
+    },
+    "DesiredStateUpdate": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["desired_state_update"] },
+        "added": { "type": "array", "items": { "$ref": "#/definitions/DesiredServer" } },
+        "updated": { "type": "array", "items": { "$ref": "#/definitions/DesiredServer" } },
+        "removed": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["type", "added", "updated", "removed"],
+      "additionalProperties": false
+    },
+    "McpFrame": {
+      "type": "object",
+      "description": "Symmetric MCP JSON-RPC frame envelope. frame is the JSON-RPC body verbatim.",
+      "properties": {
+        "type": { "type": "string", "enum": ["mcp_frame"] },
+        "server_id": { "type": "string" },
+        "frame": { "type": "object" }
+      },
+      "required": ["type", "server_id", "frame"],
+      "additionalProperties": false
+    },
+    "TunnelError": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["tunnel_error"] },
+        "server_id": { "type": ["string", "null"] },
+        "related_jsonrpc_id": { "type": ["string", "integer", "null"] },
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "required": ["type", "code", "message"],
+      "additionalProperties": false
+    },
+    "AnnounceServer": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["announce_server"] },
+        "name": { "type": "string" },
+        "command": { "type": "string" },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "env_keys": { "type": "array", "items": { "type": "string" } },
+        "working_dir": { "type": ["string", "null"] }
+      },
+      "required": ["type", "name", "command", "args", "env_keys"],
+      "additionalProperties": false
+    },
+    "Ping": {
+      "type": "object",
+      "properties": { "type": { "type": "string", "enum": ["ping"] } },
+      "required": ["type"],
+      "additionalProperties": false
+    },
+    "Pong": {
+      "type": "object",
+      "properties": { "type": { "type": "string", "enum": ["pong"] } },
+      "required": ["type"],
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/definitions/ClientHello" },
+    { "$ref": "#/definitions/ServerHello" },
+    { "$ref": "#/definitions/DesiredStateUpdate" },
+    { "$ref": "#/definitions/McpFrame" },
+    { "$ref": "#/definitions/TunnelError" },
+    { "$ref": "#/definitions/AnnounceServer" },
+    { "$ref": "#/definitions/Ping" },
+    { "$ref": "#/definitions/Pong" }
+  ]
+}
