@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Args;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
@@ -265,6 +265,15 @@ async fn drain_incoming(
             }
             TunnelFrame::TunnelError(err) => {
                 warn!(?err, "tunnel_error from backend");
+                // Device-wide (server_id=None) errors are soft rejections like
+                // the ``stdio_tunnel_disabled`` org feature flag. Bail so the
+                // outer reconnect loop persists the friendly message into
+                // state.last_error - if we wrote it directly the loop's
+                // Ok-branch (triggered by the backend's graceful close that
+                // follows) would clear it again.
+                if err.server_id.is_none() {
+                    bail!("{}", err.message);
+                }
             }
             TunnelFrame::Ping(_) => {
                 drop(sup); // release before awaiting
