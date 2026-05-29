@@ -91,6 +91,29 @@
       "required": ["type", "code", "message"],
       "additionalProperties": false
     },
+    "ServerSpawnResult": {
+      "type": "object",
+      "description": "daemon → backend: outcome of a spawn attempt for one server, emitted from the supervisor's try_spawn. ok=true means the subprocess started; ok=false carries an error string (e.g. ENOENT). Lets the backend gate the create_server HTTP response on a real spawn instead of fire-and-forget. A later in-flight crash still surfaces as the existing tunnel_error{server_offline}.",
+      "properties": {
+        "type": { "type": "string", "enum": ["server_spawn_result"] },
+        "server_id": { "type": "string" },
+        "ok": { "type": "boolean" },
+        "error": { "type": ["string", "null"] }
+      },
+      "required": ["type", "server_id", "ok"],
+      "additionalProperties": false
+    },
+    "ServerEnvUpdate": {
+      "type": "object",
+      "description": "backend → daemon: env values for one stdio server, written to the daemon's local env_store and applied on next spawn. Sent at server create/update; not part of the steady-state desired_state push so secrets are never re-sent.",
+      "properties": {
+        "type": { "type": "string", "enum": ["server_env_update"] },
+        "server_id": { "type": "string" },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } }
+      },
+      "required": ["type", "server_id", "env"],
+      "additionalProperties": false
+    },
     "AnnounceServer": {
       "type": "object",
       "properties": {
@@ -123,6 +146,8 @@
     { "$ref": "#/definitions/DesiredStateUpdate" },
     { "$ref": "#/definitions/McpFrame" },
     { "$ref": "#/definitions/TunnelError" },
+    { "$ref": "#/definitions/ServerEnvUpdate" },
+    { "$ref": "#/definitions/ServerSpawnResult" },
     { "$ref": "#/definitions/AnnounceServer" },
     { "$ref": "#/definitions/Ping" },
     { "$ref": "#/definitions/Pong" }

@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 mod cli;
 mod config;
 mod daemon;
+mod env_store;
 mod http;
 mod paths;
 mod platform;

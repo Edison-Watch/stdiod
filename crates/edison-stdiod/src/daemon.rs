@@ -25,11 +25,12 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 use tunnel_protocol::{
-    ClientHello, DesiredServer, DesiredStateUpdate, McpFrame, ServerHello, TunnelError,
-    TunnelFrame, PROTOCOL_VERSION,
+    ClientHello, DesiredServer, DesiredStateUpdate, McpFrame, ServerHello, ServerSpawnResult,
+    TunnelError, TunnelFrame, PROTOCOL_VERSION,
 };
 
 use crate::config;
+use crate::env_store::{resolve_env_for_spawn, EnvStore};
 use crate::proc::ChildServer;
 use crate::state::{ConnectionState, ServerEntry, ServerStatus, State, StateWriter};
 use crate::tunnel::{self, OutgoingHandle};
@@ -120,7 +121,12 @@ pub async fn run(args: RunArgs) -> Result<()> {
     });
     writer.update(|_| {}).await; // initial atomic write so `status` sees a file immediately
 
-    let supervisor = Arc::new(Mutex::new(Supervisor::new(outgoing.clone(), writer.clone())));
+    let env_store = EnvStore::open()?;
+    let supervisor = Arc::new(Mutex::new(Supervisor::new(
+        outgoing.clone(),
+        writer.clone(),
+        env_store,
+    )));
 
     let mut backoff = BACKOFF_MIN;
     loop {
@@ -285,9 +291,21 @@ async fn drain_incoming(
                     .send(TunnelFrame::Pong(Default::default()))
                     .await;
             }
-            TunnelFrame::ClientHello(_) | TunnelFrame::Pong(_) => {
-                // Pong is just liveness (already bumped above). ClientHello
-                // shouldn't arrive from the backend; ignore.
+            TunnelFrame::ServerEnvUpdate(update) => {
+                debug!(
+                    server_id = %update.server_id,
+                    env_keys = update.env.len(),
+                    "applying server_env_update",
+                );
+                sup.apply_env_update(update.server_id, update.env).await;
+            }
+            TunnelFrame::ServerSpawnResult(_)
+            | TunnelFrame::ClientHello(_)
+            | TunnelFrame::Pong(_) => {
+                // ServerSpawnResult is daemon→backend only; if it ever
+                // arrives here it's a backend bug. ClientHello likewise
+                // shouldn't come back from the backend. Pong is just
+                // liveness, already bumped above.
             }
         }
     }
@@ -342,15 +360,25 @@ struct Supervisor {
     children: HashMap<String, ChildServer>,
     tunnel_outgoing: OutgoingHandle,
     state: StateWriter,
+    env_store: EnvStore,
 }
 
 impl Supervisor {
-    fn new(tunnel_outgoing: OutgoingHandle, state: StateWriter) -> Self {
+    fn new(tunnel_outgoing: OutgoingHandle, state: StateWriter, env_store: EnvStore) -> Self {
         Self {
             children: HashMap::new(),
             tunnel_outgoing,
             state,
+            env_store,
         }
+    }
+
+    /// Replace the incoming desired's env with whatever we have on disk for
+    /// this server (the backend doesn't carry env in steady-state pushes -
+    /// only via `ServerEnvUpdate` frames, which write to `env_store`).
+    fn enrich(&self, mut desired: DesiredServer) -> DesiredServer {
+        desired.env = resolve_env_for_spawn(self.env_store.get(&desired.server_id), &desired.env);
+        desired
     }
 
     /// Build the ``servers`` entries for state.json from the live child
@@ -375,6 +403,7 @@ impl Supervisor {
     async fn apply_snapshot(&mut self, desired: Vec<DesiredServer>) {
         let mut wanted: HashMap<String, DesiredServer> = HashMap::new();
         for d in desired {
+            let d = self.enrich(d);
             wanted.insert(d.server_id.clone(), d);
         }
 
@@ -411,18 +440,34 @@ impl Supervisor {
         self.publish_state().await;
     }
 
-    /// Spawn a single desired server. On failure, report it to the backend
-    /// as a `tunnel_error` so admins see something instead of the daemon
-    /// silently dropping the row.
+    /// Spawn a single desired server. Emits a ``ServerSpawnResult`` either
+    /// way so the backend can gate its create_server HTTP response on the
+    /// actual spawn outcome. On failure we also emit the legacy
+    /// ``tunnel_error{spawn_failed}`` for any older backend that listens
+    /// for it.
     async fn try_spawn(&mut self, desired: DesiredServer) {
         let server_id = desired.server_id.clone();
         match ChildServer::spawn(&desired, self.tunnel_outgoing.clone()) {
             Ok(child) => {
-                self.children.insert(server_id, child);
+                self.children.insert(server_id.clone(), child);
+                self.tunnel_outgoing
+                    .send(TunnelFrame::ServerSpawnResult(ServerSpawnResult {
+                        server_id,
+                        ok: true,
+                        error: None,
+                    }))
+                    .await;
             }
             Err(e) => {
                 let message = format!("failed to spawn `{}`: {e}", desired.command);
                 warn!(server_id = %server_id, error = %e, "spawn failed");
+                self.tunnel_outgoing
+                    .send(TunnelFrame::ServerSpawnResult(ServerSpawnResult {
+                        server_id: server_id.clone(),
+                        ok: false,
+                        error: Some(message.clone()),
+                    }))
+                    .await;
                 self.tunnel_outgoing
                     .send(TunnelFrame::TunnelError(TunnelError {
                         server_id: Some(server_id),
@@ -432,6 +477,28 @@ impl Supervisor {
                     }))
                     .await;
             }
+        }
+    }
+
+    /// Persist new env values for a server and restart it if it's already
+    /// running so the new env takes effect immediately. No-op on
+    /// not-yet-known servers - the env is still saved for whenever the
+    /// matching `DesiredStateUpdate` arrives.
+    async fn apply_env_update(&mut self, server_id: String, env: std::collections::BTreeMap<String, String>) {
+        // Merge, not replace: the backend forwards only the changed keys (it
+        // never holds the others), so replacing would drop every variable the
+        // update didn't mention.
+        if let Err(e) = self.env_store.merge(&server_id, env) {
+            warn!(server_id = %server_id, error = %e, "failed to persist server_env_update");
+            return;
+        }
+        if let Some(existing) = self.children.remove(&server_id) {
+            let spec = existing.spec.clone();
+            existing.shutdown().await;
+            // ``enrich`` re-reads the (now updated) env_store.
+            let respawn = self.enrich(spec);
+            self.try_spawn(respawn).await;
+            self.publish_state().await;
         }
     }
 
@@ -450,6 +517,7 @@ impl Supervisor {
         // So: only restart when the spec genuinely differs from what we
         // last spawned with. ``enabled=false`` still tears the child down.
         for d in delta.added.into_iter().chain(delta.updated.into_iter()) {
+            let d = self.enrich(d);
             if !d.enabled {
                 if let Some(existing) = self.children.remove(&d.server_id) {
                     existing.shutdown().await;
@@ -469,6 +537,9 @@ impl Supervisor {
         for id in delta.removed {
             if let Some(child) = self.children.remove(&id) {
                 child.shutdown().await;
+            }
+            if let Err(e) = self.env_store.remove(&id) {
+                warn!(server_id = %id, error = %e, "failed to drop env_store entry on remove");
             }
         }
         self.publish_state().await;

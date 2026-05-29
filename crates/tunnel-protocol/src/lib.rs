@@ -68,6 +68,32 @@ pub struct McpFrame {
     pub frame: serde_json::Value,
 }
 
+/// daemon → backend: outcome of a spawn attempt for one server.
+///
+/// Lets the backend gate the HTTP create/update response on a real spawn
+/// result instead of fire-and-forget. A later in-flight crash still
+/// surfaces as the existing `tunnel_error { code: "server_offline" }`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerSpawnResult {
+    pub server_id: String,
+    pub ok: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// backend → daemon: env values for one stdio server, written to the
+/// daemon's local `env_store` and applied on next spawn.
+///
+/// Sent only when the dashboard creates or updates a server; the
+/// steady-state `DesiredStateUpdate` push never re-sends env so the
+/// backend doesn't hold secrets at rest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerEnvUpdate {
+    pub server_id: String,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelError {
     #[serde(default)]
@@ -96,6 +122,8 @@ pub enum TunnelFrame {
     DesiredStateUpdate(DesiredStateUpdate),
     McpFrame(McpFrame),
     TunnelError(TunnelError),
+    ServerEnvUpdate(ServerEnvUpdate),
+    ServerSpawnResult(ServerSpawnResult),
     Ping(Ping),
     Pong(Pong),
 }
@@ -142,6 +170,82 @@ mod tests {
         let json = frame.to_json();
         assert_eq!(json["type"], "client_hello");
         assert_eq!(json["os"], "macos");
+    }
+
+    #[test]
+    fn server_env_update_roundtrip() {
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("A".to_string(), "1".to_string());
+        env.insert("B".to_string(), "2".to_string());
+        let frame = TunnelFrame::ServerEnvUpdate(ServerEnvUpdate {
+            server_id: "srv-1".into(),
+            env,
+        });
+        let json = frame.to_json();
+        assert_eq!(json["type"], "server_env_update");
+        assert_eq!(json["server_id"], "srv-1");
+        assert_eq!(json["env"]["A"], "1");
+
+        let parsed = TunnelFrame::from_json(json).unwrap();
+        match parsed {
+            TunnelFrame::ServerEnvUpdate(u) => {
+                assert_eq!(u.server_id, "srv-1");
+                assert_eq!(u.env.get("B").map(String::as_str), Some("2"));
+            }
+            _ => panic!("expected server_env_update"),
+        }
+    }
+
+    #[test]
+    fn server_spawn_result_success_roundtrip() {
+        let frame = TunnelFrame::ServerSpawnResult(ServerSpawnResult {
+            server_id: "srv-1".into(),
+            ok: true,
+            error: None,
+        });
+        let json = frame.to_json();
+        assert_eq!(json["type"], "server_spawn_result");
+        assert_eq!(json["ok"], true);
+        let parsed = TunnelFrame::from_json(json).unwrap();
+        match parsed {
+            TunnelFrame::ServerSpawnResult(r) => {
+                assert!(r.ok);
+                assert!(r.error.is_none());
+            }
+            _ => panic!("expected server_spawn_result"),
+        }
+    }
+
+    #[test]
+    fn server_spawn_result_failure_roundtrip() {
+        let raw = serde_json::json!({
+            "type": "server_spawn_result",
+            "server_id": "srv-1",
+            "ok": false,
+            "error": "ENOENT: missing binary",
+        });
+        let parsed = TunnelFrame::from_json(raw).unwrap();
+        match parsed {
+            TunnelFrame::ServerSpawnResult(r) => {
+                assert!(!r.ok);
+                assert_eq!(r.error.as_deref(), Some("ENOENT: missing binary"));
+            }
+            _ => panic!("expected server_spawn_result"),
+        }
+    }
+
+    #[test]
+    fn server_env_update_empty_env_is_valid() {
+        let raw = serde_json::json!({
+            "type": "server_env_update",
+            "server_id": "srv-1",
+            "env": {},
+        });
+        let parsed = TunnelFrame::from_json(raw).unwrap();
+        match parsed {
+            TunnelFrame::ServerEnvUpdate(u) => assert!(u.env.is_empty()),
+            _ => panic!("expected server_env_update"),
+        }
     }
 
     #[test]
