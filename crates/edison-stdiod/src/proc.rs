@@ -31,10 +31,15 @@ pub struct ChildServer {
     /// even though the supervisor keys children by id externally.
     #[allow(dead_code)]
     pub server_id: String,
-    /// The full spec we spawned this child with. ``apply_delta`` compares
-    /// against an incoming ``DesiredServer`` to decide whether a
-    /// kill+respawn is actually required - see [`DesiredServer::matches`].
-    pub spec: DesiredServer,
+    /// The pre-enrichment ``DesiredServer`` as the backend sent it - args
+    /// still contain ``{KEY}`` placeholders and env still holds raw values
+    /// (no env_store overlay applied yet). Stored so respawns triggered by
+    /// ``ServerSpecUpdate`` / ``ServerEnvUpdate`` can re-run ``enrich``
+    /// against the freshly-updated env_store; re-enriching an already-
+    /// substituted spec would be a no-op and the old values would stay
+    /// baked in. ``apply_snapshot``/``apply_delta`` also compare this
+    /// against the incoming raw to decide whether a kill+respawn is needed.
+    pub desired_raw: DesiredServer,
     pub child: Child,
     pub outbound_tx: mpsc::Sender<serde_json::Value>,
     pub stdin_pump: JoinHandle<()>,
@@ -44,37 +49,44 @@ pub struct ChildServer {
 impl ChildServer {
     /// Spawn the subprocess and start the two pumps.
     ///
+    /// Takes both the ``raw`` (backend-authoritative, template placeholders
+    /// intact) and ``enriched`` (env_store overlaid + ``templated_args``
+    /// substituted) views. The subprocess is launched from ``enriched``;
+    /// ``raw`` is stowed on the handle so later ``ServerSpecUpdate`` /
+    /// ``ServerEnvUpdate`` can re-enrich from a fresh env_store read.
+    ///
     /// `tunnel_outgoing` is the broker handle the inbound pump uses to send
     /// frames upstream to the backend. It survives WS reconnects - sends
     /// during a disconnect drop silently.
     pub fn spawn(
-        desired: &DesiredServer,
+        raw: &DesiredServer,
+        enriched: &DesiredServer,
         tunnel_outgoing: OutgoingHandle,
     ) -> Result<Self> {
         info!(
-            server_id = %desired.server_id,
-            command = %desired.command,
+            server_id = %enriched.server_id,
+            command = %enriched.command,
             "spawning stdio MCP subprocess",
         );
 
-        let mut cmd = Command::new(&desired.command);
-        cmd.args(&desired.args)
+        let mut cmd = Command::new(&enriched.command);
+        cmd.args(&enriched.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
         // Start with current env, then layer the configured env values.
-        for (k, v) in &desired.env {
+        for (k, v) in &enriched.env {
             cmd.env(k, v);
         }
-        if let Some(wd) = &desired.working_dir {
+        if let Some(wd) = &enriched.working_dir {
             cmd.current_dir(wd);
         }
 
         let mut child = cmd
             .spawn()
-            .with_context(|| format!("failed to spawn `{}`", desired.command))?;
+            .with_context(|| format!("failed to spawn `{}`", enriched.command))?;
 
         let stdin = child
             .stdin
@@ -90,15 +102,15 @@ impl ChildServer {
             .context("child stderr not captured")?;
 
         let (outbound_tx, outbound_rx) = mpsc::channel::<serde_json::Value>(64);
-        let stdin_pump = tokio::spawn(stdin_pump(desired.server_id.clone(), stdin, outbound_rx));
+        let stdin_pump = tokio::spawn(stdin_pump(enriched.server_id.clone(), stdin, outbound_rx));
         let stdout_pump = tokio::spawn(stdout_pump(
-            desired.server_id.clone(),
+            enriched.server_id.clone(),
             stdout,
             tunnel_outgoing,
         ));
 
         // Drain stderr into our log so child diagnostics aren't lost.
-        let server_id = desired.server_id.clone();
+        let server_id = enriched.server_id.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
@@ -107,8 +119,8 @@ impl ChildServer {
         });
 
         Ok(Self {
-            server_id: desired.server_id.clone(),
-            spec: desired.clone(),
+            server_id: enriched.server_id.clone(),
+            desired_raw: raw.clone(),
             child,
             outbound_tx,
             stdin_pump,

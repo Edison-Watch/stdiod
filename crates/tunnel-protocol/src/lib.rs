@@ -11,7 +11,13 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Bumped to 2 when ``server_spec_update`` was added. The backend
+/// handshake check is strict equality (see
+/// ``src/api/v1/routes/stdio_tunnel.py``), so a v1 daemon connecting to a
+/// v2 backend (or vice versa) is rejected at ``client_hello`` time rather
+/// than crashing later on an unknown frame ``type`` - ``TunnelFrame``
+/// uses ``#[serde(tag = "type")]`` and rejects unknown variants.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -94,6 +100,23 @@ pub struct ServerEnvUpdate {
     pub env: std::collections::BTreeMap<String, String>,
 }
 
+/// backend → daemon: per-server template *values* the dashboard just
+/// collected. Carries the env vars the user supplied (if any) and the
+/// per-placeholder `templated_args` substitutions (e.g. `"{PP}" ->
+/// "/Users/me"`) the daemon should apply to args at spawn time. The daemon
+/// merges each map into its `env_store`; unmentioned fields don't touch
+/// existing values. Command / args structure / working_dir are *not*
+/// carried - they stay authoritative on the backend (DB) and arrive via
+/// `DesiredStateUpdate`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerSpecUpdate {
+    pub server_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub templated_args: Option<std::collections::BTreeMap<String, String>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelError {
     #[serde(default)]
@@ -123,6 +146,7 @@ pub enum TunnelFrame {
     McpFrame(McpFrame),
     TunnelError(TunnelError),
     ServerEnvUpdate(ServerEnvUpdate),
+    ServerSpecUpdate(ServerSpecUpdate),
     ServerSpawnResult(ServerSpawnResult),
     Ping(Ping),
     Pong(Pong),
@@ -245,6 +269,44 @@ mod tests {
         match parsed {
             TunnelFrame::ServerEnvUpdate(u) => assert!(u.env.is_empty()),
             _ => panic!("expected server_env_update"),
+        }
+    }
+
+    #[test]
+    fn server_spec_update_full_roundtrip() {
+        let raw = serde_json::json!({
+            "type": "server_spec_update",
+            "server_id": "fs",
+            "env": { "PP": "/Users/me" },
+            "templated_args": { "{PP}": "/Users/me" },
+        });
+        let parsed = TunnelFrame::from_json(raw).unwrap();
+        match parsed {
+            TunnelFrame::ServerSpecUpdate(u) => {
+                assert_eq!(u.server_id, "fs");
+                let env = u.env.unwrap();
+                assert_eq!(env.get("PP").map(String::as_str), Some("/Users/me"));
+                let ta = u.templated_args.unwrap();
+                assert_eq!(ta.get("{PP}").map(String::as_str), Some("/Users/me"));
+            }
+            _ => panic!("expected server_spec_update"),
+        }
+    }
+
+    #[test]
+    fn server_spec_update_optional_fields_default_to_none() {
+        let raw = serde_json::json!({
+            "type": "server_spec_update",
+            "server_id": "fs",
+        });
+        let parsed = TunnelFrame::from_json(raw).unwrap();
+        match parsed {
+            TunnelFrame::ServerSpecUpdate(u) => {
+                assert_eq!(u.server_id, "fs");
+                assert!(u.env.is_none());
+                assert!(u.templated_args.is_none());
+            }
+            _ => panic!("expected server_spec_update"),
         }
     }
 

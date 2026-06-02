@@ -114,6 +114,18 @@
       "required": ["type", "server_id", "env"],
       "additionalProperties": false
     },
+    "ServerSpecUpdate": {
+      "type": "object",
+      "description": "backend → daemon: per-server template *values* the dashboard just collected. Carries the env vars the user supplied (if any) and the per-placeholder templated_args substitutions (e.g. {\"{PP}\": \"/Users/me\"}) the daemon should apply to args at spawn time. The daemon merges each map into its on-device env_store; unmentioned fields don't touch existing values. command / args structure / working_dir are not carried - they stay authoritative on the backend (DB) and arrive via DesiredStateUpdate.",
+      "properties": {
+        "type": { "type": "string", "enum": ["server_spec_update"] },
+        "server_id": { "type": "string" },
+        "env": { "type": ["object", "null"], "additionalProperties": { "type": "string" } },
+        "templated_args": { "type": ["object", "null"], "additionalProperties": { "type": "string" } }
+      },
+      "required": ["type", "server_id"],
+      "additionalProperties": false
+    },
     "AnnounceServer": {
       "type": "object",
       "properties": {
@@ -147,6 +159,7 @@
     { "$ref": "#/definitions/McpFrame" },
     { "$ref": "#/definitions/TunnelError" },
     { "$ref": "#/definitions/ServerEnvUpdate" },
+    { "$ref": "#/definitions/ServerSpecUpdate" },
     { "$ref": "#/definitions/ServerSpawnResult" },
     { "$ref": "#/definitions/AnnounceServer" },
     { "$ref": "#/definitions/Ping" },

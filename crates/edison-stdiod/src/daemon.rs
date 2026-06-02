@@ -26,11 +26,11 @@ use tokio::time::sleep;
 use tracing::{debug, info, warn};
 use tunnel_protocol::{
     ClientHello, DesiredServer, DesiredStateUpdate, McpFrame, ServerHello, ServerSpawnResult,
-    TunnelError, TunnelFrame, PROTOCOL_VERSION,
+    ServerSpecUpdate, TunnelError, TunnelFrame, PROTOCOL_VERSION,
 };
 
 use crate::config;
-use crate::env_store::{resolve_env_for_spawn, EnvStore};
+use crate::env_store::{resolve_env_for_spawn, substitute_templated_args, EnvStore};
 use crate::proc::ChildServer;
 use crate::state::{ConnectionState, ServerEntry, ServerStatus, State, StateWriter};
 use crate::tunnel::{self, OutgoingHandle};
@@ -299,6 +299,15 @@ async fn drain_incoming(
                 );
                 sup.apply_env_update(update.server_id, update.env).await;
             }
+            TunnelFrame::ServerSpecUpdate(update) => {
+                debug!(
+                    server_id = %update.server_id,
+                    env_keys = update.env.as_ref().map(|e| e.len()).unwrap_or(0),
+                    templated_args = update.templated_args.as_ref().map(|t| t.len()).unwrap_or(0),
+                    "applying server_spec_update",
+                );
+                sup.apply_spec_update(update).await;
+            }
             TunnelFrame::ServerSpawnResult(_)
             | TunnelFrame::ClientHello(_)
             | TunnelFrame::Pong(_) => {
@@ -373,10 +382,17 @@ impl Supervisor {
         }
     }
 
-    /// Replace the incoming desired's env with whatever we have on disk for
-    /// this server (the backend doesn't carry env in steady-state pushes -
-    /// only via `ServerEnvUpdate` frames, which write to `env_store`).
+    /// Apply the device's stored values to the incoming `DesiredServer`:
+    /// env is overlaid via [`resolve_env_for_spawn`], and any
+    /// `templated_args` substitutions are applied to each arg as a substring
+    /// rewrite. `command` / `args` (structure) / `working_dir` always come
+    /// from `DesiredServer` - the daemon never invents the spec.
     fn enrich(&self, mut desired: DesiredServer) -> DesiredServer {
+        if let Some(spec) = self.env_store.get(&desired.server_id) {
+            if !spec.templated_args.is_empty() {
+                desired.args = substitute_templated_args(&desired.args, &spec.templated_args);
+            }
+        }
         desired.env = resolve_env_for_spawn(self.env_store.get(&desired.server_id), &desired.env);
         desired
     }
@@ -401,11 +417,11 @@ impl Supervisor {
     }
 
     async fn apply_snapshot(&mut self, desired: Vec<DesiredServer>) {
-        let mut wanted: HashMap<String, DesiredServer> = HashMap::new();
-        for d in desired {
-            let d = self.enrich(d);
-            wanted.insert(d.server_id.clone(), d);
-        }
+        // Hold the *raw* (pre-enrich) DesiredServer here so respawn paths
+        // (apply_spec_update / apply_env_update) can re-enrich against the
+        // freshly-updated env_store. Enrichment runs inside try_spawn.
+        let wanted: HashMap<String, DesiredServer> =
+            desired.into_iter().map(|d| (d.server_id.clone(), d)).collect();
 
         // Kill servers no longer in the snapshot (or now disabled).
         let to_drop: Vec<String> = self
@@ -423,12 +439,16 @@ impl Supervisor {
         // Spawn newly-desired enabled servers, or respawn any whose spec
         // changed while we were disconnected. Identical-spec children are
         // left alone so reconnects don't gratuitously restart anything.
+        // Equality is checked against the raw (backend-authoritative)
+        // DesiredServer; env_store-only changes are not raw differences and
+        // arrive separately as ServerSpecUpdate / ServerEnvUpdate, which
+        // handle their own respawn.
         for (id, desired) in wanted {
             if !desired.enabled {
                 continue;
             }
             if let Some(existing) = self.children.get(&id) {
-                if existing.spec == desired {
+                if existing.desired_raw == desired {
                     continue;
                 }
                 if let Some(stale) = self.children.remove(&id) {
@@ -445,9 +465,16 @@ impl Supervisor {
     /// actual spawn outcome. On failure we also emit the legacy
     /// ``tunnel_error{spawn_failed}`` for any older backend that listens
     /// for it.
-    async fn try_spawn(&mut self, desired: DesiredServer) {
-        let server_id = desired.server_id.clone();
-        match ChildServer::spawn(&desired, self.tunnel_outgoing.clone()) {
+    ///
+    /// Takes the *raw* DesiredServer (backend-authoritative, `{KEY}`
+    /// placeholders intact). Enrichment runs here against the current
+    /// env_store so subsequent respawns triggered by
+    /// ``ServerSpecUpdate`` / ``ServerEnvUpdate`` always read the latest
+    /// values - re-enriching an already-substituted spec would be a no-op.
+    async fn try_spawn(&mut self, raw: DesiredServer) {
+        let server_id = raw.server_id.clone();
+        let enriched = self.enrich(raw.clone());
+        match ChildServer::spawn(&raw, &enriched, self.tunnel_outgoing.clone()) {
             Ok(child) => {
                 self.children.insert(server_id.clone(), child);
                 self.tunnel_outgoing
@@ -459,7 +486,7 @@ impl Supervisor {
                     .await;
             }
             Err(e) => {
-                let message = format!("failed to spawn `{}`: {e}", desired.command);
+                let message = format!("failed to spawn `{}`: {e}", enriched.command);
                 warn!(server_id = %server_id, error = %e, "spawn failed");
                 self.tunnel_outgoing
                     .send(TunnelFrame::ServerSpawnResult(ServerSpawnResult {
@@ -480,6 +507,35 @@ impl Supervisor {
         }
     }
 
+    /// Persist a full resolved spec for a server (the backend's substituted
+    /// command/args/env/working_dir) and respawn if it's currently running so
+    /// the new spec takes effect immediately. No-op on not-yet-known servers
+    /// - the spec is still saved for whenever the matching
+    /// `DesiredStateUpdate` arrives. Wholesale replace (not merge) on the
+    /// store side: each `ServerSpecUpdate` carries the complete resolved
+    /// view, so previously-staged stale fields shouldn't linger.
+    async fn apply_spec_update(&mut self, update: ServerSpecUpdate) {
+        let server_id = update.server_id.clone();
+        if let Err(e) =
+            self.env_store
+                .merge_template_values(&server_id, update.env, update.templated_args)
+        {
+            warn!(server_id = %server_id, error = %e, "failed to persist server_spec_update");
+            return;
+        }
+        if let Some(existing) = self.children.remove(&server_id) {
+            // Clone the *raw* spec so ``try_spawn``'s internal ``enrich``
+            // can re-apply ``{KEY}`` substitution against the freshly-
+            // merged env_store. Cloning ``existing.spec`` (the already-
+            // substituted form) would leave ``substitute_templated_args``
+            // nothing to find and the stale values would stay baked in.
+            let raw = existing.desired_raw.clone();
+            existing.shutdown().await;
+            self.try_spawn(raw).await;
+            self.publish_state().await;
+        }
+    }
+
     /// Persist new env values for a server and restart it if it's already
     /// running so the new env takes effect immediately. No-op on
     /// not-yet-known servers - the env is still saved for whenever the
@@ -488,16 +544,16 @@ impl Supervisor {
         // Merge, not replace: the backend forwards only the changed keys (it
         // never holds the others), so replacing would drop every variable the
         // update didn't mention.
-        if let Err(e) = self.env_store.merge(&server_id, env) {
+        if let Err(e) = self.env_store.merge_env(&server_id, env) {
             warn!(server_id = %server_id, error = %e, "failed to persist server_env_update");
             return;
         }
         if let Some(existing) = self.children.remove(&server_id) {
-            let spec = existing.spec.clone();
+            // Raw spec, same reasoning as apply_spec_update above:
+            // ``try_spawn`` re-enriches against the updated env_store.
+            let raw = existing.desired_raw.clone();
             existing.shutdown().await;
-            // ``enrich`` re-reads the (now updated) env_store.
-            let respawn = self.enrich(spec);
-            self.try_spawn(respawn).await;
+            self.try_spawn(raw).await;
             self.publish_state().await;
         }
     }
@@ -516,8 +572,11 @@ impl Supervisor {
         //
         // So: only restart when the spec genuinely differs from what we
         // last spawned with. ``enabled=false`` still tears the child down.
+        // Iterate the raw DesiredServer here; ``try_spawn`` enriches
+        // internally and stores the raw on ChildServer so subsequent
+        // ServerSpecUpdate / ServerEnvUpdate respawns can re-enrich
+        // against the latest env_store. Equality is on raw.
         for d in delta.added.into_iter().chain(delta.updated.into_iter()) {
-            let d = self.enrich(d);
             if !d.enabled {
                 if let Some(existing) = self.children.remove(&d.server_id) {
                     existing.shutdown().await;
@@ -525,7 +584,7 @@ impl Supervisor {
                 continue;
             }
             if let Some(existing) = self.children.get(&d.server_id) {
-                if existing.spec == d {
+                if existing.desired_raw == d {
                     continue;
                 }
             }
