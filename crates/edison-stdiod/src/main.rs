@@ -49,17 +49,55 @@ enum Command {
     Server(cli::server::ServerCommand),
 }
 
+/// Best-effort open of the daemon log file (create + append) for the hidden
+/// Windows Scheduled Task, which has no stderr to capture. Falls back to stderr
+/// when `None`.
+#[cfg(target_os = "windows")]
+fn open_daemon_log() -> Option<std::fs::File> {
+    let path = paths::daemon_log_file().ok()?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,edison_stdiod=debug")),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    let make_filter = || {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,edison_stdiod=debug"))
+    };
+
+    // The `run` daemon on Windows runs under a hidden Scheduled Task with no
+    // stderr capture (unlike the macOS plist's StandardErrorPath), so it must
+    // write its own log file. Every other path logs to stderr so the Electron
+    // app (which spawns login/install/uninstall/status) still sees output.
+    #[cfg(target_os = "windows")]
+    let daemon_log: Option<std::fs::File> = if matches!(cli.command, Command::Run(_)) {
+        open_daemon_log()
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "windows"))]
+    let daemon_log: Option<std::fs::File> = None;
+
+    match daemon_log {
+        Some(file) => tracing_subscriber::fmt()
+            .with_env_filter(make_filter())
+            .with_ansi(false)
+            .with_writer(move || file.try_clone().expect("clone daemon log handle"))
+            .init(),
+        None => tracing_subscriber::fmt()
+            .with_env_filter(make_filter())
+            .with_writer(std::io::stderr)
+            .init(),
+    }
 
     match cli.command {
         Command::Run(args) => daemon::run(args).await,

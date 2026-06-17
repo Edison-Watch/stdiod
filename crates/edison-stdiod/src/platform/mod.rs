@@ -25,7 +25,17 @@ pub use macos::{install, uninstall};
 #[allow(unused_imports)]
 pub use macos::{is_installed, is_running};
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub mod windows;
+
+#[cfg(target_os = "windows")]
+pub use windows::{install, uninstall};
+
+#[cfg(target_os = "windows")]
+#[allow(unused_imports)]
+pub use windows::{is_installed, is_running};
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod stub {
     use anyhow::{anyhow, Result};
 
@@ -51,5 +61,5 @@ mod stub {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub use stub::{install, is_installed, is_running, uninstall};
