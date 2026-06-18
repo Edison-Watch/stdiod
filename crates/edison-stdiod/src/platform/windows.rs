@@ -23,7 +23,41 @@ use std::process::Command;
 use anyhow::{anyhow, Context, Result};
 use tracing::{debug, info, warn};
 
-const TASK_NAME: &str = "Edison Watch stdiod";
+/// Base name. The live task name appends the user's SID (see `task_name`).
+const TASK_BASENAME: &str = "Edison Watch stdiod";
+
+/// CREATE_NO_WINDOW: the daemon is GUI-subsystem, so spawning console programs
+/// (schtasks/whoami) would otherwise flash a console window.
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Per-user Scheduled Task name: `<base> <SID>`. Namespacing by SID keeps two
+/// accounts on one machine from clobbering each other's task (the name lives in
+/// the machine-global root task folder, and `/create /f` overwrites). Falls back
+/// to the bare base name if the SID can't be resolved.
+fn task_name() -> String {
+    match current_user_sid() {
+        Some(sid) => format!("{TASK_BASENAME} {sid}"),
+        None => TASK_BASENAME.to_string(),
+    }
+}
+
+/// Current user's SID via `whoami /user /fo csv /nh` -> `"DOMAIN\user","S-1-5-..."`.
+fn current_user_sid() -> Option<String> {
+    let out = Command::new("whoami")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .rsplit(',')
+        .next()
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .filter(|s| s.starts_with("S-"))
+}
 
 /// `DOMAIN\User` (or bare `User`) for the task principal + logon trigger.
 fn current_user() -> String {
@@ -112,9 +146,6 @@ fn write_task_xml(path: &Path, body: &str) -> Result<()> {
 }
 
 fn schtasks(args: &[&str]) -> Result<std::process::Output> {
-    // CREATE_NO_WINDOW: the daemon is GUI-subsystem (no console of its own), so
-    // spawning console schtasks.exe would otherwise pop a brief window each call.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     debug!(?args, "schtasks");
     Command::new("schtasks")
         .args(args)
@@ -142,18 +173,23 @@ pub fn install() -> Result<()> {
     if user.is_empty() {
         return Err(anyhow!("could not resolve current user (USERNAME unset)"));
     }
+    let task = task_name();
     let xml = render_task_xml(&binary, &user);
     let xml_path = std::env::temp_dir().join("edison-stdiod-task.xml");
     write_task_xml(&xml_path, &xml)?;
     info!(path = %xml_path.display(), "wrote scheduled task definition");
 
     // Idempotent: drop any existing task (stops it too) before recreating, so
-    // re-running picks up a moved binary or a changed definition.
-    let _ = schtasks(&["/delete", "/tn", TASK_NAME, "/f"]);
+    // re-running picks up a moved binary or a changed definition. Also drop a
+    // legacy task registered under the old un-SID'd base name (pre-migration).
+    let _ = schtasks(&["/delete", "/tn", &task, "/f"]);
+    if task != TASK_BASENAME {
+        let _ = schtasks(&["/delete", "/tn", TASK_BASENAME, "/f"]);
+    }
     let out = schtasks(&[
         "/create",
         "/tn",
-        TASK_NAME,
+        &task,
         "/xml",
         xml_path.to_string_lossy().as_ref(),
         "/f",
@@ -168,11 +204,11 @@ pub fn install() -> Result<()> {
             stdout.trim()
         ));
     }
-    info!(task = TASK_NAME, "scheduled task created");
+    info!(task = %task, "scheduled task created");
 
     // Start now (the RunAtLoad equivalent). If it fails, the logon trigger
     // still starts it at next sign-in, so don't treat it as fatal.
-    match schtasks(&["/run", "/tn", TASK_NAME]) {
+    match schtasks(&["/run", "/tn", &task]) {
         Ok(o) if o.status.success() => {}
         Ok(o) => warn!(
             stderr = %String::from_utf8_lossy(&o.stderr),
@@ -181,17 +217,23 @@ pub fn install() -> Result<()> {
         Err(e) => warn!(error = %e, "could not start task now; will start at next logon"),
     }
 
-    println!("Installed scheduled task: {TASK_NAME}");
+    println!("Installed scheduled task: {task}");
     println!("Daemon is running. Tail logs with `edison-stdiod logs --follow`.");
     Ok(())
 }
 
 /// Stop + remove the task. Idempotent.
 pub fn uninstall() -> Result<()> {
-    let _ = schtasks(&["/end", "/tn", TASK_NAME]); // stop a running instance
-    let out = schtasks(&["/delete", "/tn", TASK_NAME, "/f"])?;
+    let task = task_name();
+    let _ = schtasks(&["/end", "/tn", &task]); // stop a running instance
+    // Also clean up a legacy base-named task from before SID namespacing.
+    if task != TASK_BASENAME {
+        let _ = schtasks(&["/end", "/tn", TASK_BASENAME]);
+        let _ = schtasks(&["/delete", "/tn", TASK_BASENAME, "/f"]);
+    }
+    let out = schtasks(&["/delete", "/tn", &task, "/f"])?;
     if out.status.success() {
-        info!(task = TASK_NAME, "removed scheduled task");
+        info!(task = %task, "removed scheduled task");
     } else {
         let stderr = String::from_utf8_lossy(&out.stderr);
         // Benign: the task doesn't exist (already uninstalled).
@@ -211,7 +253,7 @@ pub fn uninstall() -> Result<()> {
 /// True iff the scheduled task exists.
 #[allow(dead_code)] // consumed by the `status` subcommand
 pub fn is_installed() -> Result<bool> {
-    Ok(schtasks(&["/query", "/tn", TASK_NAME])?.status.success())
+    Ok(schtasks(&["/query", "/tn", &task_name()])?.status.success())
 }
 
 /// True iff the task is currently executing (its action process is alive).
@@ -219,7 +261,7 @@ pub fn is_installed() -> Result<bool> {
 /// the macOS `launchctl print` parse.
 #[allow(dead_code)] // consumed by the `status` subcommand
 pub fn is_running() -> Result<bool> {
-    let out = schtasks(&["/query", "/tn", TASK_NAME, "/fo", "LIST", "/v"])?;
+    let out = schtasks(&["/query", "/tn", &task_name(), "/fo", "LIST", "/v"])?;
     if !out.status.success() {
         return Ok(false);
     }
