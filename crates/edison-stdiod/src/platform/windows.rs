@@ -16,6 +16,7 @@
 //! Idempotent: install deletes any existing task before recreating, mirroring
 //! the macOS bootout-before-bootstrap flow.
 
+use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -111,9 +112,13 @@ fn write_task_xml(path: &Path, body: &str) -> Result<()> {
 }
 
 fn schtasks(args: &[&str]) -> Result<std::process::Output> {
+    // CREATE_NO_WINDOW: the daemon is GUI-subsystem (no console of its own), so
+    // spawning console schtasks.exe would otherwise pop a brief window each call.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     debug!(?args, "schtasks");
     Command::new("schtasks")
         .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .context("failed to invoke schtasks")
 }
