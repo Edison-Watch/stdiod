@@ -6,6 +6,8 @@
 //! are deferred to v1.1 per the implementation plan in
 //! `stdiod/REQUIREMENTS.md`.
 
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use clap::{Parser, Subcommand};
 
 mod cli;

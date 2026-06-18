@@ -81,6 +81,8 @@ fn build_child_command(program: &str, args: &[String]) -> Command {
                 c
             }
         };
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.env("PATH", path);
         cmd
     }

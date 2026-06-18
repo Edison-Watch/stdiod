@@ -217,13 +217,19 @@ async fn run_one_session(
     // Heartbeat. ``last_pong`` is bumped by every inbound frame (Pong or
     // anything else - any traffic means the backend is alive).
     let last_pong = Arc::new(Mutex::new(Instant::now()));
-    let hb_task = {
+    let mut hb_task = {
         let outgoing = outgoing.clone();
         let last_pong = last_pong.clone();
         tokio::spawn(heartbeat(outgoing, last_pong))
     };
 
-    let result = drain_incoming(supervisor, &mut incoming_rx, last_pong).await;
+    let result = tokio::select! {
+        r = drain_incoming(supervisor, &mut incoming_rx, last_pong) => r,
+        _ = &mut hb_task => {
+            warn!("heartbeat: stale connection, tearing down session to reconnect");
+            Ok(())
+        }
+    };
     hb_task.abort();
     ws_task.abort();
     drop(outgoing_tx);
