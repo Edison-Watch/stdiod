@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Result};
 use clap::Args;
@@ -96,9 +96,16 @@ impl ResolvedRun {
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 const HEARTBEAT_STALE_AFTER: Duration = Duration::from_secs(25);
 
-// Exponential backoff with ±25% jitter, capped at 60s.
+// If the wall-clock gap between heartbeat ticks far exceeds the interval, the
+// machine slept/suspended: the socket is almost certainly dead and the monotonic
+// clock paused during sleep (so HEARTBEAT_STALE_AFTER would be measured from wake).
+// Tear down immediately on resume instead of waiting it out.
+const HEARTBEAT_RESUME_GAP: Duration = Duration::from_secs(45);
+
+// Exponential backoff with ±25% jitter, capped at 30s so a reconnect after the
+// network returns (e.g. post-resume) isn't stranded behind a long backoff.
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
-const BACKOFF_MAX: Duration = Duration::from_secs(60);
+const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 pub async fn run(args: RunArgs) -> Result<()> {
     let resolved = ResolvedRun::from_args(args)?;
@@ -331,8 +338,22 @@ async fn heartbeat(outgoing: OutgoingHandle, last_pong: Arc<Mutex<Instant>>) {
     let mut tick = tokio::time::interval(HEARTBEAT_INTERVAL);
     // ``MissedTickBehavior::Delay`` so we don't burst pings after a pause.
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_tick_wall = SystemTime::now();
     loop {
         tick.tick().await;
+
+        // Detect a resume-from-sleep: a wall-clock jump much larger than the
+        // interval means the process was frozen. Reconnect now rather than waiting
+        // out the (monotonic) stale window, which only starts counting from wake.
+        let now_wall = SystemTime::now();
+        let wall_gap = now_wall.duration_since(last_tick_wall).unwrap_or_default();
+        last_tick_wall = now_wall;
+        if wall_gap > HEARTBEAT_RESUME_GAP {
+            warn!(?wall_gap, "heartbeat: large wall-clock gap (system resumed?), reconnecting");
+            outgoing.clear();
+            return;
+        }
+
         let stale = {
             let last = *last_pong.lock().await;
             Instant::now().saturating_duration_since(last)
