@@ -155,7 +155,7 @@ pub async fn run_frame_loop(
                     continue;
                 }
             };
-            if let Err(e) = sink.send(Message::Text(text)).await {
+            if let Err(e) = sink.send(Message::Text(text.into())).await {
                 warn!(error = %e, "WS send failed; closing sink");
                 let _ = sink.close().await;
                 return;
