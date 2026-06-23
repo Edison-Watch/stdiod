@@ -57,4 +57,4 @@ cargo fmt --all --check && \
 ## License
 
 By contributing, you agree that your contributions will be licensed under the
-[MIT License](./LICENSE) that covers this project.
+[GNU Affero General Public License v3.0](./LICENSE) that covers this project.

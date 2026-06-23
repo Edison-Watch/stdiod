@@ -1,7 +1,7 @@
 # stdiod
 
 [![CI](https://github.com/Edison-Watch/stdiod/actions/workflows/ci.yml/badge.svg)](https://github.com/Edison-Watch/stdiod/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](./LICENSE)
 
 **stdiod** is a small daemon that bridges local [stdio MCP servers](https://modelcontextprotocol.io/) to the Edison Watch backend over a single outbound WebSocket tunnel.
 
@@ -109,4 +109,4 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the contribution workflow and [`S
 
 ## License
 
-Licensed under the [MIT License](./LICENSE).
+Licensed under the [GNU Affero General Public License v3.0](./LICENSE).
