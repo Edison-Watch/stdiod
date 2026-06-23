@@ -615,7 +615,7 @@ impl Supervisor {
         // internally and stores the raw on ChildServer so subsequent
         // ServerSpecUpdate / ServerEnvUpdate respawns can re-enrich
         // against the latest env_store. Equality is on raw.
-        for d in delta.added.into_iter().chain(delta.updated.into_iter()) {
+        for d in delta.added.into_iter().chain(delta.updated) {
             if !d.enabled {
                 if let Some(existing) = self.children.remove(&d.server_id) {
                     existing.shutdown().await;
