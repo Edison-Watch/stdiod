@@ -2,9 +2,9 @@
 
 Purpose: validate that FastMCP 3.2.4's `ClientTransport` ABC can host the
 symmetric `mcp_frame` envelope defined in
-[stdiod/ARCHITECTURE.md](../ARCHITECTURE.md#wire-protocol) without forcing
-wire-protocol changes. Throwaway prototype per the milestone in
-[stdiod/REQUIREMENTS.md](../REQUIREMENTS.md#v0-milestone-fastmcp-transport-spike).
+[stdiod/ARCHITECTURE.md](../../ARCHITECTURE.md#wire-protocol) without forcing
+wire-protocol changes. Throwaway v0 prototype that informed the v1 design;
+kept here as a historical record, not part of the daemon build.
 
 ## Layout
 
@@ -27,7 +27,7 @@ What we're validating is the **wire format**, not WebSocket plumbing.
 ## Run
 
 ```
-cd stdiod/spike
+cd stdiod/dev/spike
 uv run python spike_test.py
 ```
 
@@ -105,5 +105,5 @@ These are honest deferrals; none invalidates the conclusion.
 
 **Proceed with v1 using the wire schema as documented.** No changes
 needed to
-[stdiod/ARCHITECTURE.md](../ARCHITECTURE.md#wire-protocol) as a result of
+[stdiod/ARCHITECTURE.md](../../ARCHITECTURE.md#wire-protocol) as a result of
 this spike.

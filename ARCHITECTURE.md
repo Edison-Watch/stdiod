@@ -41,8 +41,8 @@ crates/
   tunnel-protocol/      generated Rust types for the wire protocol
 schema/
   tunnel-protocol.json  JSON Schema — single source of truth for the protocol
-spike/                  throwaway prototypes that informed the design
-tools/                  developer harnesses
+dev/
+  spike/                throwaway v0 prototype that informed the design
 ```
 
 The `tunnel-protocol` crate's Rust types are generated from
