@@ -110,7 +110,11 @@ pub async fn connect(
             anyhow::bail!(
                 "WebSocket upgrade failed: HTTP {} - {}",
                 status,
-                if body.is_empty() { "(no body)".into() } else { body }
+                if body.is_empty() {
+                    "(no body)".into()
+                } else {
+                    body
+                }
             );
         }
         Err(e) => return Err(anyhow::Error::from(e).context("WebSocket upgrade failed")),
@@ -199,6 +203,13 @@ pub async fn run_frame_loop(
     Ok(())
 }
 
+// `anyhow` re-export so the public API can return its Result without callers
+// needing the same dependency in scope.
+#[allow(dead_code)]
+fn _ensure_anyhow_used() -> Result<()> {
+    Err(anyhow!("unused"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,11 +230,4 @@ mod tests {
         );
         assert!(build_ws_url("plain.example.com").is_err());
     }
-}
-
-// `anyhow` re-export so the public API can return its Result without callers
-// needing the same dependency in scope.
-#[allow(dead_code)]
-fn _ensure_anyhow_used() -> Result<()> {
-    Err(anyhow!("unused"))
 }

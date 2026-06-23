@@ -349,7 +349,10 @@ async fn heartbeat(outgoing: OutgoingHandle, last_pong: Arc<Mutex<Instant>>) {
         let wall_gap = now_wall.duration_since(last_tick_wall).unwrap_or_default();
         last_tick_wall = now_wall;
         if wall_gap > HEARTBEAT_RESUME_GAP {
-            warn!(?wall_gap, "heartbeat: large wall-clock gap (system resumed?), reconnecting");
+            warn!(
+                ?wall_gap,
+                "heartbeat: large wall-clock gap (system resumed?), reconnecting"
+            );
             outgoing.clear();
             return;
         }
@@ -359,7 +362,10 @@ async fn heartbeat(outgoing: OutgoingHandle, last_pong: Arc<Mutex<Instant>>) {
             Instant::now().saturating_duration_since(last)
         };
         if stale > HEARTBEAT_STALE_AFTER {
-            warn!(?stale, "heartbeat: no traffic from backend, closing connection");
+            warn!(
+                ?stale,
+                "heartbeat: no traffic from backend, closing connection"
+            );
             // Dropping the only OutgoingHandle clone in our scope doesn't
             // close the underlying sender (the supervisor still holds one).
             // The cleanest way to force-close is to clear the broker so the
@@ -447,8 +453,10 @@ impl Supervisor {
         // Hold the *raw* (pre-enrich) DesiredServer here so respawn paths
         // (apply_spec_update / apply_env_update) can re-enrich against the
         // freshly-updated env_store. Enrichment runs inside try_spawn.
-        let wanted: HashMap<String, DesiredServer> =
-            desired.into_iter().map(|d| (d.server_id.clone(), d)).collect();
+        let wanted: HashMap<String, DesiredServer> = desired
+            .into_iter()
+            .map(|d| (d.server_id.clone(), d))
+            .collect();
 
         // Kill servers no longer in the snapshot (or now disabled).
         let to_drop: Vec<String> = self
@@ -536,8 +544,8 @@ impl Supervisor {
 
     /// Persist a full resolved spec for a server (the backend's substituted
     /// command/args/env/working_dir) and respawn if it's currently running so
-    /// the new spec takes effect immediately. No-op on not-yet-known servers
-    /// - the spec is still saved for whenever the matching
+    /// the new spec takes effect immediately. No-op on not-yet-known
+    /// servers; the spec is still saved for whenever the matching
     /// `DesiredStateUpdate` arrives. Wholesale replace (not merge) on the
     /// store side: each `ServerSpecUpdate` carries the complete resolved
     /// view, so previously-staged stale fields shouldn't linger.
@@ -567,7 +575,11 @@ impl Supervisor {
     /// running so the new env takes effect immediately. No-op on
     /// not-yet-known servers - the env is still saved for whenever the
     /// matching `DesiredStateUpdate` arrives.
-    async fn apply_env_update(&mut self, server_id: String, env: std::collections::BTreeMap<String, String>) {
+    async fn apply_env_update(
+        &mut self,
+        server_id: String,
+        env: std::collections::BTreeMap<String, String>,
+    ) {
         // Merge, not replace: the backend forwards only the changed keys (it
         // never holds the others), so replacing would drop every variable the
         // update didn't mention.

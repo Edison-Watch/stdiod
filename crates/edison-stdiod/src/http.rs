@@ -21,9 +21,9 @@ pub fn from_persisted() -> Result<BackendClient> {
     let backend = cfg.backend_url.ok_or_else(|| {
         anyhow!("no backend URL on disk. Run `edison-stdiod login --backend ...`.")
     })?;
-    let token = cfg.api_key.ok_or_else(|| {
-        anyhow!("no API key on disk. Run `edison-stdiod login --api-key ...`.")
-    })?;
+    let token = cfg
+        .api_key
+        .ok_or_else(|| anyhow!("no API key on disk. Run `edison-stdiod login --api-key ...`."))?;
     BackendClient::new(backend, token)
 }
 

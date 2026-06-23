@@ -25,11 +25,11 @@ use anyhow::{anyhow, Result};
 ///
 /// We pin to `~/.config/` on every platform (including macOS, where the
 /// OS convention is `~/Library/Application Support/`) so the docs in
-/// REQUIREMENTS.md / ARCHITECTURE.md can name a single canonical path
+/// ARCHITECTURE.md can name a single canonical path
 /// and so admins shelling into a user's machine know where to look.
 pub fn config_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| anyhow!("could not resolve home dir; HOME not set?"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow!("could not resolve home dir; HOME not set?"))?;
     let dir = home.join(".config").join("edison-stdiod");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)

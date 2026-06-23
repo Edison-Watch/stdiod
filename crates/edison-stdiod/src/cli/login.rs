@@ -64,9 +64,7 @@ pub fn run(args: LoginArgs) -> Result<()> {
         ));
     }
     if cfg.api_key.as_deref().unwrap_or("").is_empty() {
-        return Err(anyhow!(
-            "missing API key. Pass --api-key on first login.",
-        ));
+        return Err(anyhow!("missing API key. Pass --api-key on first login.",));
     }
 
     cfg.save()?;
@@ -81,8 +79,7 @@ pub fn run(args: LoginArgs) -> Result<()> {
 /// simple concatenation, and reject obvious typos early instead of
 /// surfacing a confusing TCP error at first connect.
 fn normalize_backend_url(raw: &str) -> Result<String> {
-    let url = url::Url::parse(raw)
-        .map_err(|e| anyhow!("`{}` is not a valid URL ({})", raw, e))?;
+    let url = url::Url::parse(raw).map_err(|e| anyhow!("`{}` is not a valid URL ({})", raw, e))?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(anyhow!(
             "backend URL must use http or https, got `{}`",

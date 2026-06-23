@@ -3,8 +3,8 @@
 //! Bridges local stdio MCP server subprocesses to the Edison Watch backend
 //! over a WebSocket tunnel. v1 MVP scope: connect, receive desired state,
 //! spawn subprocesses, forward MCP frames. Reconnect / heartbeat / install
-//! are deferred to v1.1 per the implementation plan in
-//! `stdiod/REQUIREMENTS.md`.
+//! are deferred to v1.1 per the design in
+//! `stdiod/ARCHITECTURE.md`.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

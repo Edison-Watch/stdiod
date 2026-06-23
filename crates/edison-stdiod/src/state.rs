@@ -103,8 +103,8 @@ impl State {
     }
 
     pub fn load_from(path: &Path) -> Result<Self> {
-        let body = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let body =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         serde_json::from_str(&body).with_context(|| format!("parsing {}", path.display()))
     }
 
@@ -136,7 +136,7 @@ impl StateWriter {
     /// disk.
     pub async fn update<F: FnOnce(&mut State)>(&self, f: F) {
         let mut guard = self.inner.lock().await;
-        f(&mut *guard);
+        f(&mut guard);
         guard.generation = guard.generation.saturating_add(1);
         let snapshot = guard.clone();
         drop(guard);
@@ -175,7 +175,10 @@ mod tests {
         };
         let json = serde_json::to_string(&s).unwrap();
         let parsed: State = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed.connection_state, ConnectionState::Connected));
+        assert!(matches!(
+            parsed.connection_state,
+            ConnectionState::Connected
+        ));
         assert_eq!(parsed.servers.len(), 1);
         assert_eq!(parsed.servers[0].pid, Some(12345));
     }

@@ -42,14 +42,12 @@ mod stub {
     pub fn install() -> Result<()> {
         Err(anyhow!(
             "install is only implemented for macOS in v1. \
-             See stdiod/REQUIREMENTS.md for the Linux / Windows roadmap.",
+             See stdiod/ARCHITECTURE.md for the Linux / Windows roadmap.",
         ))
     }
 
     pub fn uninstall() -> Result<()> {
-        Err(anyhow!(
-            "uninstall is only implemented for macOS in v1.",
-        ))
+        Err(anyhow!("uninstall is only implemented for macOS in v1.",))
     }
 
     pub fn is_installed() -> Result<bool> {

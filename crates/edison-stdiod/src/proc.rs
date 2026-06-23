@@ -268,18 +268,9 @@ impl ChildServer {
             .spawn()
             .with_context(|| format!("failed to spawn `{}`", enriched.command))?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .context("child stdin not captured")?;
-        let stdout = child
-            .stdout
-            .take()
-            .context("child stdout not captured")?;
-        let stderr = child
-            .stderr
-            .take()
-            .context("child stderr not captured")?;
+        let stdin = child.stdin.take().context("child stdin not captured")?;
+        let stdout = child.stdout.take().context("child stdout not captured")?;
+        let stderr = child.stderr.take().context("child stderr not captured")?;
 
         let (outbound_tx, outbound_rx) = mpsc::channel::<serde_json::Value>(64);
         let stdin_pump = tokio::spawn(stdin_pump(enriched.server_id.clone(), stdin, outbound_rx));

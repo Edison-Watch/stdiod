@@ -96,9 +96,7 @@ impl EnvStore {
                 parsed.servers
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(e) => {
-                return Err(e).with_context(|| format!("failed to read {}", path.display()))
-            }
+            Err(e) => return Err(e).with_context(|| format!("failed to read {}", path.display())),
         };
         Ok(Self { path, data })
     }
@@ -161,8 +159,8 @@ impl EnvStore {
         let on_disk = OnDisk {
             servers: self.data.clone(),
         };
-        let body = serde_json::to_string_pretty(&on_disk)
-            .context("serialising server_envs.json")?;
+        let body =
+            serde_json::to_string_pretty(&on_disk).context("serialising server_envs.json")?;
 
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)
@@ -170,8 +168,7 @@ impl EnvStore {
         }
 
         let tmp = tmp_path_for(&self.path);
-        std::fs::write(&tmp, body)
-            .with_context(|| format!("writing {}", tmp.display()))?;
+        std::fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -179,9 +176,8 @@ impl EnvStore {
             perms.set_mode(0o600);
             std::fs::set_permissions(&tmp, perms)?;
         }
-        std::fs::rename(&tmp, &self.path).with_context(|| {
-            format!("renaming {} -> {}", tmp.display(), self.path.display())
-        })?;
+        std::fs::rename(&tmp, &self.path)
+            .with_context(|| format!("renaming {} -> {}", tmp.display(), self.path.display()))?;
         Ok(())
     }
 }
@@ -204,7 +200,10 @@ pub fn resolve_env_for_spawn(stored: Option<&ServerSpec>, fallback: &EnvMap) -> 
 /// unchanged. The placeholders include their braces (e.g. `"{PP}"`) - the
 /// daemon doesn't parse template syntax, just rewrites the substrings the
 /// backend told it about.
-pub fn substitute_templated_args(args: &[String], replacements: &BTreeMap<String, String>) -> Vec<String> {
+pub fn substitute_templated_args(
+    args: &[String],
+    replacements: &BTreeMap<String, String>,
+) -> Vec<String> {
     args.iter()
         .map(|arg| {
             let mut out = arg.clone();
@@ -284,7 +283,12 @@ mod tests {
         }
         let store = EnvStore::open_at(path).unwrap();
         assert_eq!(
-            store.get("srv-1").unwrap().env.get("TOKEN").map(String::as_str),
+            store
+                .get("srv-1")
+                .unwrap()
+                .env
+                .get("TOKEN")
+                .map(String::as_str),
             Some("abc")
         );
     }
@@ -311,9 +315,7 @@ mod tests {
                 "srv-1",
                 ServerSpec {
                     env: sample_env(&[("A", "1"), ("B", "2")]),
-                    templated_args: [("{X}".to_string(), "x".to_string())]
-                        .into_iter()
-                        .collect(),
+                    templated_args: [("{X}".to_string(), "x".to_string())].into_iter().collect(),
                 },
             )
             .unwrap();
@@ -342,7 +344,11 @@ mod tests {
             .merge_template_values(
                 "fs",
                 Some(sample_env(&[("PP", "/Users/me")])),
-                Some([("{PP}".to_string(), "/Users/me".to_string())].into_iter().collect()),
+                Some(
+                    [("{PP}".to_string(), "/Users/me".to_string())]
+                        .into_iter()
+                        .collect(),
+                ),
             )
             .unwrap();
         let got = store.get("fs").unwrap();
@@ -371,7 +377,11 @@ mod tests {
             .merge_template_values(
                 "fs",
                 None,
-                Some([("{PP}".to_string(), "/Users/me".to_string())].into_iter().collect()),
+                Some(
+                    [("{PP}".to_string(), "/Users/me".to_string())]
+                        .into_iter()
+                        .collect(),
+                ),
             )
             .unwrap();
         let got = store.get("fs").unwrap();
@@ -403,8 +413,9 @@ mod tests {
             "{PP}".to_string(),
             "{PP}/bar".to_string(),
         ];
-        let subs: BTreeMap<String, String> =
-            [("{PP}".to_string(), "/Users/me".to_string())].into_iter().collect();
+        let subs: BTreeMap<String, String> = [("{PP}".to_string(), "/Users/me".to_string())]
+            .into_iter()
+            .collect();
         let out = substitute_templated_args(&args, &subs);
         assert_eq!(
             out,
@@ -420,8 +431,9 @@ mod tests {
     #[test]
     fn substitute_templated_args_noop_when_no_match() {
         let args = vec!["-y".to_string(), "plain".to_string()];
-        let subs: BTreeMap<String, String> =
-            [("{NOTHERE}".to_string(), "x".to_string())].into_iter().collect();
+        let subs: BTreeMap<String, String> = [("{NOTHERE}".to_string(), "x".to_string())]
+            .into_iter()
+            .collect();
         assert_eq!(substitute_templated_args(&args, &subs), args);
     }
 
@@ -523,9 +535,7 @@ mod tests {
         // A staged spec with only templated_args (no env) shouldn't blank
         // out a DesiredServer that does carry env.
         let stored = ServerSpec {
-            templated_args: [("{X}".to_string(), "x".to_string())]
-                .into_iter()
-                .collect(),
+            templated_args: [("{X}".to_string(), "x".to_string())].into_iter().collect(),
             ..Default::default()
         };
         let fallback = sample_env(&[("Y", "2")]);

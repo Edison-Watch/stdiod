@@ -226,7 +226,7 @@ pub fn install() -> Result<()> {
 pub fn uninstall() -> Result<()> {
     let task = task_name();
     let _ = schtasks(&["/end", "/tn", &task]); // stop a running instance
-    // Also clean up a legacy base-named task from before SID namespacing.
+                                               // Also clean up a legacy base-named task from before SID namespacing.
     if task != TASK_BASENAME {
         let _ = schtasks(&["/end", "/tn", TASK_BASENAME]);
         let _ = schtasks(&["/delete", "/tn", TASK_BASENAME, "/f"]);

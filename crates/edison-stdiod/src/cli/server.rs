@@ -178,15 +178,20 @@ async fn list(args: ListArgs) -> Result<()> {
     filtered.sort_by(|a, b| a.name.cmp(&b.name));
 
     if args.json {
-        let json = serde_json::to_string_pretty(&filtered.iter().map(|it| {
-            serde_json::json!({
-                "name": it.name,
-                "display_name": it.display_name,
-                "enabled": it.enabled,
-                "tool_count": it.tool_count,
-                "device_id": it.device_id,
-            })
-        }).collect::<Vec<_>>())?;
+        let json = serde_json::to_string_pretty(
+            &filtered
+                .iter()
+                .map(|it| {
+                    serde_json::json!({
+                        "name": it.name,
+                        "display_name": it.display_name,
+                        "enabled": it.enabled,
+                        "tool_count": it.tool_count,
+                        "device_id": it.device_id,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )?;
         println!("{json}");
         return Ok(());
     }

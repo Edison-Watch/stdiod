@@ -58,8 +58,9 @@ impl PersistedConfig {
 
     pub fn load_from(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
-            Ok(body) => toml::from_str(&body)
-                .with_context(|| format!("failed to parse {}", path.display())),
+            Ok(body) => {
+                toml::from_str(&body).with_context(|| format!("failed to parse {}", path.display()))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e).with_context(|| format!("failed to read {}", path.display())),
         }
@@ -72,8 +73,7 @@ impl PersistedConfig {
         let path = paths::config_file()?;
         let tmp = path.with_extension("toml.tmp");
         let body = toml::to_string_pretty(self).context("serialising config.toml")?;
-        std::fs::write(&tmp, body)
-            .with_context(|| format!("writing {}", tmp.display()))?;
+        std::fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -131,16 +131,12 @@ impl Resolved {
     }
 
     pub fn device_label(&self) -> String {
-        self.device_label
-            .clone()
-            .unwrap_or_else(|| hostname())
+        self.device_label.clone().unwrap_or_else(hostname)
     }
 }
 
 fn missing(name: &str, flag: &str) -> anyhow::Error {
-    anyhow!(
-        "missing {name}: run `edison-stdiod login` first, or pass {flag}",
-    )
+    anyhow!("missing {name}: run `edison-stdiod login` first, or pass {flag}",)
 }
 
 /// Detected OS, mapped to the wire-protocol `Os` enum.

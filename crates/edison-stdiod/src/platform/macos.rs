@@ -169,13 +169,14 @@ pub fn install() -> Result<()> {
     // Always bootout before bootstrap so re-running install picks up a
     // moved binary, an updated plist, or a previously-broken unit.
     bootout_quiet()?;
-    let out = launchctl(&["bootstrap", &user_domain(), plist.to_string_lossy().as_ref()])?;
+    let out = launchctl(&[
+        "bootstrap",
+        &user_domain(),
+        plist.to_string_lossy().as_ref(),
+    ])?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-        return Err(anyhow!(
-            "launchctl bootstrap failed: {}",
-            stderr.trim()
-        ));
+        return Err(anyhow!("launchctl bootstrap failed: {}", stderr.trim()));
     }
     info!(label = LABEL, "LaunchAgent loaded");
     println!("Installed LaunchAgent: {}", plist.display());
@@ -237,7 +238,10 @@ mod tests {
 
     #[test]
     fn render_plist_includes_label_and_paths() {
-        let body = render_plist(Path::new("/usr/local/bin/edison-stdiod"), Path::new("/tmp/x.log"));
+        let body = render_plist(
+            Path::new("/usr/local/bin/edison-stdiod"),
+            Path::new("/tmp/x.log"),
+        );
         assert!(body.contains("<string>watch.edison.stdiod</string>"));
         assert!(body.contains("<string>/usr/local/bin/edison-stdiod</string>"));
         assert!(body.contains("<string>run</string>"));

@@ -79,7 +79,11 @@ fn print_state(s: &State, running: bool) {
         ConnectionState::NeedsReauth => "needs reauth (run `edison-stdiod login`)",
         ConnectionState::NeedsUpgrade => "needs upgrade (daemon binary too old for backend)",
     };
-    let label = if running { "Connection:" } else { "Last state:" };
+    let label = if running {
+        "Connection:"
+    } else {
+        "Last state:"
+    };
     println!("{:<16} {}", label, conn);
     if let Some(url) = &s.backend_url {
         println!("Backend:         {}", url);

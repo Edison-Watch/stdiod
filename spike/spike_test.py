@@ -1,6 +1,6 @@
 """Driver for the v0 FastMCP transport spike.
 
-Exercises every MCP frame type required by REQUIREMENTS.md against the
+Exercises every MCP frame type described in ARCHITECTURE.md against the
 symmetric ``McpFrame`` envelope:
 
 - initialize handshake / capability negotiation
