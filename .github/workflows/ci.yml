@@ -25,6 +25,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: AI writing check
+        run: scripts/check_ai_writing.sh
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy

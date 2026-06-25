@@ -17,9 +17,9 @@ requests, or discussions.**
 
 Instead, report privately through either channel:
 
-- **GitHub private advisory** — open the repository's **Security** tab and click
+- **GitHub private advisory** - open the repository's **Security** tab and click
   **"Report a vulnerability"** ([private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)).
-- **Email** — <security@edison.watch>.
+- **Email** - <security@edison.watch>.
 
 Please include enough detail to reproduce: affected version/commit, platform,
 configuration, and a description of the impact. We aim to acknowledge reports

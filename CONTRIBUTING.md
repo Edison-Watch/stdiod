@@ -51,7 +51,7 @@ cargo fmt --all --check && \
 
 - For ordinary bugs and feature requests, open a
   [GitHub issue](https://github.com/Edison-Watch/stdiod/issues).
-- For **security vulnerabilities**, do **not** open a public issue — follow
+- For **security vulnerabilities**, do **not** open a public issue - follow
   [`SECURITY.md`](./SECURITY.md) instead.
 
 ## License

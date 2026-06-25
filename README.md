@@ -5,7 +5,7 @@
 
 **stdiod** is a small daemon that bridges local [stdio MCP servers](https://modelcontextprotocol.io/) to the Edison Watch backend over a single outbound WebSocket tunnel.
 
-It runs on a user's machine, dials out to the backend (no inbound ports), and lets the backend drive locally-spawned MCP server subprocesses — forwarding MCP frames in both directions. An AI client talking to the backend's gateway reaches these local servers as if they were hosted remotely, while the processes (and their filesystem/credentials) stay on the user's device.
+It runs on a user's machine, dials out to the backend (no inbound ports), and lets the backend drive locally-spawned MCP server subprocesses - forwarding MCP frames in both directions. An AI client talking to the backend's gateway reaches these local servers as if they were hosted remotely, while the processes (and their filesystem/credentials) stay on the user's device.
 
 ```
 AI client ──▶ Edison backend gateway ──▶  WebSocket tunnel  ──▶ stdiod ──▶ local MCP server subprocess
@@ -81,8 +81,8 @@ edison-stdiod server remove filesystem
 
 Settings resolve in two layers, highest precedence first:
 
-1. **CLI flags / environment variables** — handy for development overrides.
-2. **`~/.config/edison-stdiod/config.toml`** — written by `edison-stdiod login`; this is what the OS supervisor unit reads (service units don't carry secrets in their environment).
+1. **CLI flags / environment variables** - handy for development overrides.
+2. **`~/.config/edison-stdiod/config.toml`** - written by `edison-stdiod login`; this is what the OS supervisor unit reads (service units don't carry secrets in their environment).
 
 | Field (`config.toml`) | Env var | Description |
 | --- | --- | --- |
