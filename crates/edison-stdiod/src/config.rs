@@ -139,6 +139,50 @@ fn missing(name: &str, flag: &str) -> anyhow::Error {
     anyhow!("missing {name}: run `edison-stdiod login` first, or pass {flag}",)
 }
 
+/// If `backend_url` would transmit the API key + `X-Edison-Secret-Key` in
+/// cleartext, return a human-readable warning; otherwise `None`.
+///
+/// A backend is considered safe when either:
+/// - it uses a TLS scheme (`https://` / `wss://`), or
+/// - its host is loopback (`localhost`, `127.0.0.0/8`, `::1`) - those bytes
+///   never leave the machine, so plain `http`/`ws` is fine for local dev.
+///
+/// Everything else (a non-TLS scheme to a routable host) means the bearer
+/// credentials cross the network unencrypted, which both leaks them to any
+/// on-path observer and removes the only thing authenticating the backend -
+/// a MITM could then push a `server_hello` that spawns arbitrary commands.
+/// We warn rather than refuse so `--backend http://localhost:3001` dev flows
+/// keep working; production should always be TLS (see SECURITY.md).
+pub fn insecure_backend_warning(backend_url: &str) -> Option<String> {
+    let url = url::Url::parse(backend_url).ok()?;
+    if matches!(url.scheme(), "https" | "wss") {
+        return None;
+    }
+    let host = url.host_str().unwrap_or("");
+    if host_is_loopback(host) {
+        return None;
+    }
+    Some(format!(
+        "backend URL `{backend_url}` is not TLS ({}://): the API key and \
+         X-Edison-Secret-Key will be sent in cleartext, where any on-path \
+         attacker can read them or hijack the tunnel to spawn commands on \
+         this device. Use https:// or wss:// for any non-localhost backend.",
+        url.scheme(),
+    ))
+}
+
+/// True for hostnames/addresses that never leave the local machine.
+fn host_is_loopback(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // url::Url keeps IPv6 literals bracketed (`[::1]`); strip for parsing.
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    bare.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
 /// Detected OS, mapped to the wire-protocol `Os` enum.
 pub fn current_os() -> tunnel_protocol::Os {
     if cfg!(target_os = "macos") {
@@ -226,6 +270,26 @@ mod tests {
         let merged = Resolved::merge(persisted, overrides);
         assert_eq!(merged.backend_url.as_deref(), Some("http://from-env"));
         assert_eq!(merged.api_key.as_deref(), Some("from-disk"));
+    }
+
+    #[test]
+    fn tls_backends_are_not_flagged() {
+        assert!(insecure_backend_warning("https://dashboard.edison.watch").is_none());
+        assert!(insecure_backend_warning("wss://dashboard.edison.watch/x").is_none());
+    }
+
+    #[test]
+    fn loopback_http_is_not_flagged() {
+        assert!(insecure_backend_warning("http://localhost:3001").is_none());
+        assert!(insecure_backend_warning("http://127.0.0.1:8000").is_none());
+        assert!(insecure_backend_warning("ws://[::1]:9999").is_none());
+    }
+
+    #[test]
+    fn cleartext_remote_backend_is_flagged() {
+        let w = insecure_backend_warning("http://dashboard.edison.watch").unwrap();
+        assert!(w.contains("cleartext"), "got: {w}");
+        assert!(insecure_backend_warning("ws://10.0.0.5:8000").is_some());
     }
 
     fn tempdir_or_skip() -> std::path::PathBuf {

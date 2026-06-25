@@ -67,6 +67,12 @@ pub fn run(args: LoginArgs) -> Result<()> {
         return Err(anyhow!("missing API key. Pass --api-key on first login.",));
     }
 
+    if let Some(w) =
+        crate::config::insecure_backend_warning(cfg.backend_url.as_deref().unwrap_or(""))
+    {
+        eprintln!("warning: {w}");
+    }
+
     cfg.save()?;
     let path = paths::config_file()?;
     info!(path = %path.display(), "wrote config.toml");

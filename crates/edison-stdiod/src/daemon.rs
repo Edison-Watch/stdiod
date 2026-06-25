@@ -109,6 +109,9 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 pub async fn run(args: RunArgs) -> Result<()> {
     let resolved = ResolvedRun::from_args(args)?;
+    if let Some(w) = config::insecure_backend_warning(&resolved.backend) {
+        warn!("{w}");
+    }
     // The supervisor - and the broker handle the children depend on -
     // live across reconnects. ``apply_snapshot`` on each new WS will
     // diff and reconcile.
@@ -323,11 +326,12 @@ async fn drain_incoming(
             }
             TunnelFrame::ServerSpawnResult(_)
             | TunnelFrame::ClientHello(_)
+            | TunnelFrame::AnnounceServer(_)
             | TunnelFrame::Pong(_) => {
-                // ServerSpawnResult is daemon→backend only; if it ever
-                // arrives here it's a backend bug. ClientHello likewise
-                // shouldn't come back from the backend. Pong is just
-                // liveness, already bumped above.
+                // ServerSpawnResult and AnnounceServer are daemon→backend
+                // only; if either arrives here it's a backend bug.
+                // ClientHello likewise shouldn't come back from the backend.
+                // Pong is just liveness, already bumped above.
             }
         }
     }

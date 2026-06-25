@@ -24,6 +24,9 @@ pub fn from_persisted() -> Result<BackendClient> {
     let token = cfg
         .api_key
         .ok_or_else(|| anyhow!("no API key on disk. Run `edison-stdiod login --api-key ...`."))?;
+    if let Some(w) = crate::config::insecure_backend_warning(&backend) {
+        eprintln!("warning: {w}");
+    }
     BackendClient::new(backend, token)
 }
 

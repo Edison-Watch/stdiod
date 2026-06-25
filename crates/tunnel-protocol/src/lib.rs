@@ -117,6 +117,22 @@ pub struct ServerSpecUpdate {
     pub templated_args: Option<std::collections::BTreeMap<String, String>>,
 }
 
+/// daemon → backend: the user registered a server locally (e.g. via the
+/// CLI) and the daemon announces it so the backend can record it for review.
+/// Only key *names* are sent (`env_keys`), never values. Mirrors the
+/// `announce_server` definition in `schema/tunnel-protocol.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnounceServer {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env_keys: Vec<String>,
+    #[serde(default)]
+    pub working_dir: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelError {
     #[serde(default)]
@@ -148,6 +164,7 @@ pub enum TunnelFrame {
     ServerEnvUpdate(ServerEnvUpdate),
     ServerSpecUpdate(ServerSpecUpdate),
     ServerSpawnResult(ServerSpawnResult),
+    AnnounceServer(AnnounceServer),
     Ping(Ping),
     Pong(Pong),
 }
@@ -307,6 +324,31 @@ mod tests {
                 assert!(u.templated_args.is_none());
             }
             _ => panic!("expected server_spec_update"),
+        }
+    }
+
+    #[test]
+    fn announce_server_roundtrip() {
+        let frame = TunnelFrame::AnnounceServer(AnnounceServer {
+            name: "fs".into(),
+            command: "npx".into(),
+            args: vec!["-y".into(), "@mcp/fs".into()],
+            env_keys: vec!["TOKEN".into()],
+            working_dir: None,
+        });
+        let json = frame.to_json();
+        assert_eq!(json["type"], "announce_server");
+        assert_eq!(json["name"], "fs");
+        // Key *names* only - never values.
+        assert_eq!(json["env_keys"][0], "TOKEN");
+
+        let parsed = TunnelFrame::from_json(json).unwrap();
+        match parsed {
+            TunnelFrame::AnnounceServer(a) => {
+                assert_eq!(a.command, "npx");
+                assert_eq!(a.args, vec!["-y".to_string(), "@mcp/fs".to_string()]);
+            }
+            _ => panic!("expected announce_server"),
         }
     }
 
