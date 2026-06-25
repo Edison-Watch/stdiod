@@ -605,8 +605,7 @@ impl Supervisor {
         // ``added`` and ``updated`` are treated identically by spec, but
         // ``updated`` arrives often as a side effect of unrelated CRUD on
         // the same device (the backend resends the full current set as
-        // ``updated`` whenever anything changes - see
-        // ``push_desired_state`` in src/api/v1/routes/stdio_tunnel.py).
+        // ``updated`` whenever anything on the device changes).
         // Killing+respawning a healthy child whose spec hasn't actually
         // changed silently invalidates the backend's already-initialized
         // MCP session against it: the new child sees the next ``tools/list``

@@ -1,9 +1,8 @@
 //! Wire types for the stdiod tunnel.
 //!
-//! Hand-written to match `stdiod/schema/tunnel-protocol.json`. The schema is
-//! the source of truth; once codegen lands these will be generated. The
-//! Python equivalent lives at `src/stdio_tunnel/protocol.py` and must stay in
-//! lock-step.
+//! Hand-written to match `schema/tunnel-protocol.json`. The schema is the
+//! source of truth; once codegen lands these will be generated. The backend
+//! keeps its own equivalent types in lock-step with the same schema.
 //!
 //! The envelope is intentionally **symmetric** and **opaque**: both sides
 //! exchange the same [`TunnelFrame`] variants, and [`McpFrame::frame`] is a
@@ -11,12 +10,14 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Bumped to 2 when ``server_spec_update`` was added. The backend
-/// handshake check is strict equality (see
-/// ``src/api/v1/routes/stdio_tunnel.py``), so a v1 daemon connecting to a
-/// v2 backend (or vice versa) is rejected at ``client_hello`` time rather
-/// than crashing later on an unknown frame ``type`` - ``TunnelFrame``
-/// uses ``#[serde(tag = "type")]`` and rejects unknown variants.
+/// Bumped to 2 when ``server_spec_update`` was added.
+///
+/// ``TunnelFrame`` is internally tagged (``#[serde(tag = "type")]``) and
+/// rejects unknown ``type`` values, so a frame from a newer peer that this
+/// crate doesn't know about fails to parse and is dropped rather than
+/// mishandled. Note the daemon does **not** hard-reject on a
+/// ``protocol_version`` mismatch in v1: it logs a warning and continues (see
+/// ``daemon.rs``). Strict version gating (``needs_upgrade``) is planned.
 pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

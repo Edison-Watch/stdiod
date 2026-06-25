@@ -80,10 +80,8 @@ pub async fn run(args: ServerArgs) -> Result<()> {
 // add
 // ---------------------------------------------------------------------------
 //
-// Mirrors the dashboard's CreateServerRequest body (see
-// src/api/v1/schemas/servers.py:167 `CreateServerRequest`). Only the
-// fields stdio_tunnel callers need are sent; the backend defaults the
-// rest.
+// Mirrors the dashboard's create-server request body. Only the fields
+// stdio_tunnel callers need are sent; the backend defaults the rest.
 
 #[derive(Debug, Serialize)]
 struct CreateServerBody {

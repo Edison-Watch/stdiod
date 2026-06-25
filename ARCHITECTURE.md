@@ -82,25 +82,38 @@ Defined as JSON Schema at `schema/tunnel-protocol.json`. Frames are JSON with a
 - `server_hello` (backend → daemon): `protocol_version` plus a **full
   desired-state snapshot** —
   `servers: [{server_id, name, command, args, env, working_dir, enabled}]`.
-  If the daemon's `protocol_version` is below the minimum the backend supports,
-  the upgrade is refused with a `needs_upgrade` close code; the daemon records
-  `needs_upgrade=true` in `state.json` and stops retrying until the binary is
-  updated.
+  On a `protocol_version` mismatch the daemon currently logs a warning and
+  continues (v1 MVP). The designed behaviour — refuse with a `needs_upgrade`
+  close code, record `needs_upgrade=true` in `state.json`, and stop retrying
+  until the binary is updated — is planned, not yet implemented.
 - `desired_state_update` (backend → daemon): steady-state delta —
   `added` / `updated` / `removed` server lists.
-- `device_status` (daemon → backend): periodic snapshot of which children are
-  running and their last health timestamp.
-- `announce_server` (daemon → backend): the user added a server via the local
-  CLI; the backend records it for review.
-- `creds_invalidated` (backend → daemon): the user's credentials were rotated.
-  The daemon closes the connection, sets `needs_reauth=true` in `state.json`,
-  fires a single OS notification, and waits for credentials to change before
-  retrying.
-- `fetch_logs_request` / `fetch_logs_response`: an operator-initiated, bounded
-  (default 200 lines) pull of a child's recent `stdout`/`stderr`. Never streamed
-  continuously, to keep bandwidth predictable.
+- `server_env_update` (backend → daemon): env values for one server, written
+  to the daemon's local `env_store` and applied on next spawn. Sent at server
+  create/update; never part of the steady-state push, so secrets aren't
+  re-sent.
+- `server_spec_update` (backend → daemon): per-server template *values* (env +
+  per-placeholder `templated_args`) collected on the dashboard; merged into the
+  `env_store`. Command/args structure/working_dir stay authoritative on the
+  backend and arrive via `desired_state_update`.
+- `server_spawn_result` (daemon → backend): outcome of a spawn attempt, so the
+  backend can gate its create/update HTTP response on a real spawn instead of
+  fire-and-forget.
+- `announce_server` (daemon → backend): defined in the protocol for a daemon
+  that registers a server locally. **Not emitted in v1** — the `server add`
+  CLI registers over the HTTP API instead; the frame is reserved.
 - `ping` / `pong` (both directions): heartbeat — see
   [Disconnect handling](#disconnect-handling).
+
+**Planned control frames (designed, not implemented in v1):**
+
+- `device_status` (daemon → backend): periodic snapshot of which children are
+  running and their last health timestamp.
+- `creds_invalidated` (backend → daemon): on credential rotation, the daemon
+  would close, set `needs_reauth=true` in `state.json`, fire one OS
+  notification, and wait for credentials to change before retrying.
+- `fetch_logs_request` / `fetch_logs_response`: an operator-initiated, bounded
+  (default 200 lines) pull of a child's recent `stdout`/`stderr`.
 
 The `request_id` on `fetch_logs_*` is a control-layer correlation id, distinct
 from the JSON-RPC `id` carried inside MCP frames.
@@ -216,24 +229,24 @@ The daemon keeps almost nothing durable; the backend is the source of truth.
 
 ### Heartbeats
 
-- The daemon sends a WS Ping every 15s and closes + reconnects if no Pong
-  arrives within 10s.
-- TCP keepalive is enabled to detect zombie sockets faster (e.g. a laptop lid
-  closed mid-connection).
-- A wall-clock gap detector notices sleep/resume jumps and restarts the
-  WebSocket immediately rather than waiting out the heartbeat timeout.
+- The daemon sends a WS Ping every 15s and tears the session down if no
+  traffic of any kind arrives for 25s (any inbound frame counts as liveness,
+  not just a Pong).
+- A wall-clock gap detector notices sleep/resume jumps larger than 45s and
+  restarts the WebSocket immediately rather than waiting out the heartbeat
+  timeout.
 
 ### Reconnect policy
 
-- Exponential backoff with jitter: 1s, 2s, 4s, 8s … capped at 60s, ±25% jitter
+- Exponential backoff with jitter: 1s, 2s, 4s, 8s … capped at 30s, ±25% jitter
   to avoid a thundering herd against the backend after a deploy.
-- **Retry forever** on transient errors (network down, DNS failure, connection
-  refused, 5xx upgrade response).
-- **Stop and notify on auth failure** (401/403 on upgrade): set
-  `needs_reauth=true` in `state.json`, fire one OS notification, then wait for
-  credentials to change before retrying.
-- **Other 4xx** (device disabled, version too old): back off to a steady 60s and
-  log clearly.
+- **Retry forever** on any connect/session error (network down, DNS failure,
+  connection refused, non-2xx upgrade response). v1 does not special-case the
+  failure: it logs the error into `state.last_error` and retries with backoff.
+- **Planned (not in v1):** distinguish auth failure (401/403) — set
+  `needs_reauth=true`, fire one OS notification, and wait for credentials to
+  change before retrying — and other 4xx (device disabled, version too old) by
+  backing off to a steady 60s. Today all of these just retry with backoff.
 
 ### Reconciliation on (re)connect
 

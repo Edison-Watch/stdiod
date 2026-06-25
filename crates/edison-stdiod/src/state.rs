@@ -3,8 +3,8 @@
 //! Consumers:
 //!
 //! - `edison-stdiod status` - single-shot read, formats for humans.
-//! - Desktop app tray icon ([client_2/src/main/index.ts]) - polls the file
-//!   periodically when the user opens the menu.
+//! - Desktop app tray icon - polls the file periodically when the user opens
+//!   the menu.
 //!
 //! The daemon rewrites this file on every connection-state transition and
 //! every child spawn / death, never on the hot path (per-frame). Writes

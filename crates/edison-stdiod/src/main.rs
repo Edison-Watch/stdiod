@@ -1,10 +1,9 @@
 //! `edison-stdiod` - Edison Watch stdiod daemon.
 //!
 //! Bridges local stdio MCP server subprocesses to the Edison Watch backend
-//! over a WebSocket tunnel. v1 MVP scope: connect, receive desired state,
-//! spawn subprocesses, forward MCP frames. Reconnect / heartbeat / install
-//! are deferred to v1.1 per the design in
-//! `stdiod/ARCHITECTURE.md`.
+//! over a WebSocket tunnel: connect, receive desired state, spawn
+//! subprocesses, and forward MCP frames, with reconnect/heartbeat supervision
+//! and OS service install/uninstall. See `ARCHITECTURE.md` for the design.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
