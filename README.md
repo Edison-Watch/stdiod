@@ -1,7 +1,7 @@
 <h1 align="center">stdiod</h1>
 
 <p align="center">
-<b>Bridge local stdio MCP servers to a remote backend over a single outbound WebSocket — no inbound ports, and your processes, files, and credentials never leave the machine.</b>
+<b>Bridge local stdio MCP servers to a remote backend over a single outbound WebSocket - no inbound ports, and your processes, files, and credentials never leave the machine.</b>
 </p>
 
 <p align="center">
@@ -23,14 +23,14 @@
 
 ---
 
-**stdiod** is a small Rust daemon that bridges local [stdio MCP servers](https://modelcontextprotocol.io/) to the Edison Watch backend over one outbound WebSocket tunnel. It runs on a user's machine, dials out to the backend (no inbound ports), and lets the backend drive locally-spawned MCP server subprocesses — forwarding MCP frames in both directions. An AI client talking to the backend's gateway reaches these local servers as if they were hosted remotely, while the processes (and their filesystem and credentials) stay on the user's device.
+**stdiod** is a small Rust daemon that bridges local [stdio MCP servers](https://modelcontextprotocol.io/) to the Edison Watch backend over one outbound WebSocket tunnel. It runs on a user's machine, dials out to the backend (no inbound ports), and lets the backend drive locally-spawned MCP server subprocesses - forwarding MCP frames in both directions. An AI client talking to the backend's gateway reaches these local servers as if they were hosted remotely, while the processes (and their filesystem and credentials) stay on the user's device.
 
 <p align="center">
   <img src="docs/architecture.svg" alt="An AI client reaches the Edison backend gateway, which drives the stdiod daemon over a single outbound WebSocket tunnel; the daemon spawns and supervises local stdio MCP servers on the user's machine." width="760">
 </p>
 
 > [!WARNING]
-> **Experimental (v0.0.1).** Early software under active development; expect bugs. It has **not** had an independent security audit. The wire protocol, CLI surface, and on-disk formats may change without notice before a 1.0 release. Today the daemon runs as a supervised service on **macOS only** — Linux and Windows support is on the roadmap, and the CLI will tell you when a step is unsupported on your platform.
+> **Experimental (v0.0.1).** Early software under active development; expect bugs. It has **not** had an independent security audit. The wire protocol, CLI surface, and on-disk formats may change without notice before a 1.0 release. Today the daemon runs as a supervised service on **macOS only** - Linux and Windows support is on the roadmap, and the CLI will tell you when a step is unsupported on your platform.
 
 ## How it works
 
@@ -39,7 +39,7 @@
 - **Child supervision.** The backend pushes a desired set of servers; the daemon spawns/stops the matching subprocesses and pumps their stdio.
 - **Survival.** It reconnects with backoff across network blips and machine sleep/resume, and reconciles desired state on every (re)connect.
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the full design and [`schema/tunnel-protocol.json`](./schema/tunnel-protocol.json) for the wire protocol — the single source of truth for the frame types.
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the full design and [`schema/tunnel-protocol.json`](./schema/tunnel-protocol.json) for the wire protocol - the single source of truth for the frame types.
 
 ## Install
 
@@ -119,7 +119,7 @@ TLDR: `edison-stdiod --help` (and `edison-stdiod <command> --help` for any subco
 | `logs` | Print the daemon log. `-f`/`--follow` to tail in real time; `-n`/`--lines N` to set the backscroll (default 200). |
 | `server add <name>` | Register a stdio_tunnel server. `--command <exe>`, repeatable `--arg <a>`, optional `--working-dir` and `--display-name`. The prefix name must be alphanumeric (plus hyphens). |
 | `server list` | List stdio_tunnel servers registered for this device. `--json` for raw output. |
-| `server remove <name>` | Delete a server by name. Idempotent — a missing name is reported as a no-op. |
+| `server remove <name>` | Delete a server by name. Idempotent - a missing name is reported as a no-op. |
 
 </details>
 
@@ -132,8 +132,8 @@ TLDR: `edison-stdiod login` writes everything to `~/.config/edison-stdiod/config
 
 Settings resolve in two layers, highest precedence first:
 
-1. **CLI flags / environment variables** — handy for development overrides.
-2. **`~/.config/edison-stdiod/config.toml`** — written by `edison-stdiod login`; this is what the OS supervisor unit reads (service units don't carry secrets in their environment).
+1. **CLI flags / environment variables** - handy for development overrides.
+2. **`~/.config/edison-stdiod/config.toml`** - written by `edison-stdiod login`; this is what the OS supervisor unit reads (service units don't carry secrets in their environment).
 
 ```toml
 # ~/.config/edison-stdiod/config.toml  (mode 0600)
@@ -158,7 +158,7 @@ Rotate the API key by re-running `edison-stdiod login --api-key …`. To remove 
 
 ## Files on disk
 
-TLDR: the daemon keeps almost nothing durable — the backend is the source of truth.
+TLDR: the daemon keeps almost nothing durable - the backend is the source of truth.
 
 <details>
 <summary>Expand</summary>
@@ -167,7 +167,7 @@ TLDR: the daemon keeps almost nothing durable — the backend is the source of t
 ~/.config/edison-stdiod/
   config.toml                      # backend URL, device_id, api_key, secret (mode 0600)
   state.json                       # atomic writes; snapshot consumed by the desktop tray UI
-~/Library/Logs/edison-stdiod/      # macOS — platform-equivalent paths elsewhere
+~/Library/Logs/edison-stdiod/      # macOS - platform-equivalent paths elsewhere
   daemon.log                       # rotated daily
   child-<name>.log                 # per-child stdout/stderr capture
 ```
@@ -204,7 +204,7 @@ TLDR: one outbound WebSocket carries a symmetric, MCP-agnostic frame protocol; t
 ```
 
 - **Outbound-only & reverse RPC.** The daemon dials out; the backend drives it. Server-initiated frames (desired-state pushes, sampling requests, credential invalidations) are natural over the single long-lived connection.
-- **MCP-agnostic transport.** The `tunnel` module treats each `frame` field as opaque bytes — MCP version bumps and new methods need no daemon changes.
+- **MCP-agnostic transport.** The `tunnel` module treats each `frame` field as opaque bytes - MCP version bumps and new methods need no daemon changes.
 - **Reconcile on (re)connect.** `client_hello` → `server_hello` (full desired-state snapshot) → diff and start/stop/restart children; steady-state changes arrive as `desired_state_update` deltas.
 
 </details>
@@ -223,7 +223,7 @@ cargo fmt --all --check      # formatting
 cargo clippy --workspace --all-targets -- -D warnings   # lints
 ```
 
-The `tunnel-protocol` crate's Rust types are generated from [`schema/tunnel-protocol.json`](./schema/tunnel-protocol.json) — keep the schema and the generated types in lock-step.
+The `tunnel-protocol` crate's Rust types are generated from [`schema/tunnel-protocol.json`](./schema/tunnel-protocol.json) - keep the schema and the generated types in lock-step.
 
 [`dev/spike/`](./dev/spike/) holds a throwaway v0 Python prototype that validated the wire protocol before the Rust daemon was written; it is kept as a historical record and is not part of the build.
 
@@ -235,12 +235,12 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the contribution workflow and [`S
 
 This software is built with:
 
-- [Tokio](https://tokio.rs/) — async runtime
-- [tokio-tungstenite](https://github.com/snapview/tokio-tungstenite) — WebSocket transport
-- [reqwest](https://github.com/seanmonstar/reqwest) — HTTP client for the backend REST surface
-- [clap](https://github.com/clap-rs/clap) — CLI parsing
-- [serde](https://serde.rs/) + [serde_json](https://github.com/serde-rs/json) — serialization
-- [tracing](https://github.com/tokio-rs/tracing) — structured logging
+- [Tokio](https://tokio.rs/) - async runtime
+- [tokio-tungstenite](https://github.com/snapview/tokio-tungstenite) - WebSocket transport
+- [reqwest](https://github.com/seanmonstar/reqwest) - HTTP client for the backend REST surface
+- [clap](https://github.com/clap-rs/clap) - CLI parsing
+- [serde](https://serde.rs/) + [serde_json](https://github.com/serde-rs/json) - serialization
+- [tracing](https://github.com/tokio-rs/tracing) - structured logging
 
 ## License
 

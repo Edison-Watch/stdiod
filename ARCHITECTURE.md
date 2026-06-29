@@ -1,4 +1,4 @@
-# stdiod — Architecture
+# stdiod - Architecture
 
 `edison-stdiod` is a small, long-lived daemon that runs on a user's machine. It
 maintains a single authenticated outbound connection to a backend, supervises a
@@ -16,14 +16,14 @@ contract is described here.
 - **Subprocesses run locally.** Every MCP stdio server the daemon manages is
   spawned as a child process on the user's machine. Nothing is spawned remotely.
 - **The backend is the source of truth.** The daemon stores almost no durable
-  state of its own — it connects, fetches the desired set of servers, and
+  state of its own - it connects, fetches the desired set of servers, and
   reconciles its running children against it.
 
 ## Components
 
 `edison-stdiod` is a single binary that is both the long-lived service and the
-control CLI. Its responsibilities — described here by role, independent of how
-the source happens to be arranged on disk — are:
+control CLI. Its responsibilities - described here by role, independent of how
+the source happens to be arranged on disk - are:
 
 ```
    control commands                  ┌──────────────────────────────┐
@@ -43,15 +43,15 @@ the source happens to be arranged on disk — are:
                                    Edison backend       local MCP servers
 ```
 
-- **Control surface** — the CLI subcommands a user runs to authenticate,
+- **Control surface** - the CLI subcommands a user runs to authenticate,
   register the OS service, manage servers, and inspect state. They persist
   configuration; they do not carry MCP traffic.
-- **Supervisor** — the long-lived run loop: connect, fetch desired state,
+- **Supervisor** - the long-lived run loop: connect, fetch desired state,
   reconcile running children against it, and supervise.
-- **Tunnel transport** — the single outbound WebSocket and its framing. It is
+- **Tunnel transport** - the single outbound WebSocket and its framing. It is
   MCP-agnostic: MCP frames are forwarded as opaque bytes (see
   [MCP-agnostic by design](#mcp-agnostic-by-design)).
-- **Child supervision** — spawning each desired server as a subprocess and
+- **Child supervision** - spawning each desired server as a subprocess and
   pumping its stdio to and from the tunnel.
 
 Cross-cutting concerns sit beneath all of the above: the thin HTTP client for
@@ -79,7 +79,7 @@ reverse tunnel because:
 
 - One authentication check, one stateful connection, lowest latency.
 - Server-initiated frames (desired-state pushes, credential invalidations) are
-  natural — the backend can talk to the daemon at any time.
+  natural - the backend can talk to the daemon at any time.
 - It reuses the same outbound TLS:443 posture that already traverses corporate
   firewalls, with no third-party tunnelling dependency.
 
@@ -94,13 +94,13 @@ Defined as JSON Schema at `schema/tunnel-protocol.json`. Frames are JSON with a
   `hostname`, `label`, `os`, `client_version`, `currently_running: [server_id]`.
   Sent immediately after the socket is established.
 - `server_hello` (backend → daemon): `protocol_version` plus a **full
-  desired-state snapshot** —
+  desired-state snapshot** -
   `servers: [{server_id, name, command, args, env, working_dir, enabled}]`.
   If the daemon's `protocol_version` is below the minimum the backend supports,
   the upgrade is refused with a `needs_upgrade` close code; the daemon records
   `needs_upgrade=true` in `state.json` and stops retrying until the binary is
   updated.
-- `desired_state_update` (backend → daemon): steady-state delta —
+- `desired_state_update` (backend → daemon): steady-state delta -
   `added` / `updated` / `removed` server lists.
 - `device_status` (daemon → backend): periodic snapshot of which children are
   running and their last health timestamp.
@@ -113,7 +113,7 @@ Defined as JSON Schema at `schema/tunnel-protocol.json`. Frames are JSON with a
 - `fetch_logs_request` / `fetch_logs_response`: an operator-initiated, bounded
   (default 200 lines) pull of a child's recent `stdout`/`stderr`. Never streamed
   continuously, to keep bandwidth predictable.
-- `ping` / `pong` (both directions): heartbeat — see
+- `ping` / `pong` (both directions): heartbeat - see
   [Disconnect handling](#disconnect-handling).
 
 The `request_id` on `fetch_logs_*` is a control-layer correlation id, distinct
@@ -123,7 +123,7 @@ from the JSON-RPC `id` carried inside MCP frames.
 
 - `mcp_frame` (both directions): a JSON-RPC frame addressed to or originating
   from a specific child. Fields: `server_id` and `frame` (the JSON-RPC body
-  verbatim — request, response, or notification).
+  verbatim - request, response, or notification).
 - `tunnel_error` (both directions): a structured, non-JSON-RPC error
   (subprocess crashed, unknown server, transport fault). Carries the inner
   JSON-RPC `id` it relates to when applicable, so the receiver can fail the
@@ -132,14 +132,14 @@ from the JSON-RPC `id` carried inside MCP frames.
 A single symmetric frame type captures every MCP interaction because JSON-RPC's
 own envelope already distinguishes requests (`id` + `method`), responses (`id` +
 `result`/`error`), and notifications (`method`, no `id`). JSON-RPC `id`s are
-scoped to the originator, so the inner `id` is the correlation key — no outer
+scoped to the originator, so the inner `id` is the correlation key - no outer
 `request_id` is needed for MCP traffic.
 
 ### MCP-agnostic by design
 
 The transport is **MCP-agnostic**: the daemon's `tunnel` module treats every
 `frame` field as opaque bytes and never inspects its contents. This is a
-load-bearing invariant — any temptation to sniff a method name or peek at
+load-bearing invariant - any temptation to sniff a method name or peek at
 `params` inside the daemon is a smell; that logic belongs above the transport,
 on the backend.
 
@@ -151,7 +151,7 @@ Concrete consequences:
 - **Bidirectional notifications** (e.g. `notifications/cancelled`,
   `notifications/progress`) are just notification-shaped `mcp_frame`s.
 - **MCP version bumps and new methods** require no changes anywhere in the
-  daemon — `initialize` negotiation happens between the backend and the stdio
+  daemon - `initialize` negotiation happens between the backend and the stdio
   server, both outside the transport.
 
 ## Child-process supervision
@@ -178,7 +178,7 @@ waiting for a response that never arrives. The WebSocket itself stays open and
 other children on the same device are unaffected; the supervisor then decides
 whether and when to respawn the dead child per the latest desired state. This
 was the one behaviour the early spike could not derive from "treat MCP frames as
-opaque" alone — it is a deliberate active signal the daemon must produce.
+opaque" alone - it is a deliberate active signal the daemon must produce.
 
 ## Persistence and survival
 
@@ -205,7 +205,7 @@ The daemon keeps almost nothing durable; the backend is the source of truth.
 ~/.config/edison-stdiod/
   config.toml      backend URL, device_id, api_key, secret
   state.json       atomic writes; consumed by the desktop tray UI
-~/Library/Logs/edison-stdiod/      (macOS — platform-equivalent paths elsewhere)
+~/Library/Logs/edison-stdiod/      (macOS - platform-equivalent paths elsewhere)
   daemon.log       rotated daily
   child-<name>.log per-child stdout/stderr capture
 ```
@@ -254,7 +254,7 @@ The daemon keeps almost nothing durable; the backend is the source of truth.
 Every (re)connect runs the same protocol:
 
 1. Daemon sends `client_hello { device_id, currently_running: [...] }`.
-2. Backend replies `server_hello { servers: [...] }` — a full desired-state
+2. Backend replies `server_hello { servers: [...] }` - a full desired-state
    snapshot for this device.
 3. Daemon diffs:
    - Start any enabled server not currently running.
@@ -268,15 +268,15 @@ Every (re)connect runs the same protocol:
 Every outbound `mcp_frame` carries a JSON-RPC `id` used as the correlation key.
 On socket close, all outstanding calls are failed cleanly (the backend surfaces
 a `device_offline`-style JSON-RPC error to the caller); there are no automatic
-retries — the calling agent decides whether to retry.
+retries - the calling agent decides whether to retry.
 
 ## CLI
 
 The same binary is the daemon and the control CLI:
 
-- `edison-stdiod login --backend <url> --api-key <key>` — store credentials.
-- `edison-stdiod install` / `uninstall` — manage the OS service unit.
-- `edison-stdiod run` — run the daemon (normally invoked by the service unit).
-- `edison-stdiod server …` — add / list / remove locally-defined servers.
-- `edison-stdiod status` — show connection and per-child state.
-- `edison-stdiod logs` — tail daemon / child logs.
+- `edison-stdiod login --backend <url> --api-key <key>` - store credentials.
+- `edison-stdiod install` / `uninstall` - manage the OS service unit.
+- `edison-stdiod run` - run the daemon (normally invoked by the service unit).
+- `edison-stdiod server …` - add / list / remove locally-defined servers.
+- `edison-stdiod status` - show connection and per-child state.
+- `edison-stdiod logs` - tail daemon / child logs.
