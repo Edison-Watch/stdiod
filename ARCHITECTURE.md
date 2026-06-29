@@ -19,35 +19,49 @@ contract is described here.
   state of its own — it connects, fetches the desired set of servers, and
   reconciles its running children against it.
 
-## Workspace layout
+## Components
 
-A Cargo workspace with two crates:
+`edison-stdiod` is a single binary that is both the long-lived service and the
+control CLI. Its responsibilities — described here by role, independent of how
+the source happens to be arranged on disk — are:
 
 ```
-crates/
-  edison-stdiod/        the daemon + CLI binary
-    src/
-      main.rs           entry point / arg dispatch
-      cli/              subcommands: login, install, server, status, logs
-      daemon.rs         the run loop: connect, reconcile, supervise
-      tunnel.rs         WebSocket transport + framing
-      http.rs           thin HTTP client for the backend REST surface
-      proc.rs           child-process spawning and stdout/stderr pumps
-      state.rs          state.json (atomic writes, consumed by the tray UI)
-      config.rs         config.toml (backend URL, device id, credentials)
-      env_store.rs      per-server environment variable storage
-      paths.rs          platform config/log/data path resolution
-      platform/         macOS / Linux / Windows service integration
-  tunnel-protocol/      generated Rust types for the wire protocol
-schema/
-  tunnel-protocol.json  JSON Schema — single source of truth for the protocol
-dev/
-  spike/                throwaway v0 prototype that informed the design
+   control commands                  ┌──────────────────────────────┐
+   (login · install ·                │  Supervisor                   │
+    status · logs ·   ──── config ──▶│  connect → reconcile →        │
+    server …)                        │  supervise the run loop       │
+                                     └────────┬───────────┬─────────┘
+                                              │           │
+                                  ┌───────────▼──┐   ┌────▼───────────┐
+                                  │ Tunnel        │   │ Child          │
+                                  │ transport     │   │ supervision    │
+                                  │ (WebSocket,   │   │ (spawn + stdio │
+                                  │ opaque frames)│   │ pumps)         │
+                                  └───────┬───────┘   └────────┬───────┘
+                            outbound WS   │                    │ stdio
+                                          ▼                    ▼
+                                   Edison backend       local MCP servers
 ```
 
-The `tunnel-protocol` crate's Rust types are generated from
-`schema/tunnel-protocol.json` (via `schemars`/`typify`). The JSON Schema is the
-single source of truth so the daemon and its peer can be kept in lock-step.
+- **Control surface** — the CLI subcommands a user runs to authenticate,
+  register the OS service, manage servers, and inspect state. They persist
+  configuration; they do not carry MCP traffic.
+- **Supervisor** — the long-lived run loop: connect, fetch desired state,
+  reconcile running children against it, and supervise.
+- **Tunnel transport** — the single outbound WebSocket and its framing. It is
+  MCP-agnostic: MCP frames are forwarded as opaque bytes (see
+  [MCP-agnostic by design](#mcp-agnostic-by-design)).
+- **Child supervision** — spawning each desired server as a subprocess and
+  pumping its stdio to and from the tunnel.
+
+Cross-cutting concerns sit beneath all of the above: the thin HTTP client for
+the backend's REST surface, on-disk config and state persistence, and the
+platform-specific service integration (macOS / Linux / Windows).
+
+The wire-protocol Rust types are **generated from a JSON Schema** (via
+`schemars`/`typify`). The schema is the single source of truth so the daemon and
+its peer can be kept in lock-step; see
+[`schema/tunnel-protocol.json`](./schema/tunnel-protocol.json).
 
 ## Tunnel mechanism: reverse RPC over WebSocket
 
