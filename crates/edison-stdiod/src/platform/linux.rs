@@ -38,8 +38,7 @@ const UNIT_NAME: &str = "edison-stdiod.service";
 fn unit_path() -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| anyhow!("HOME not set"))?;
     let dir = home.join(".config/systemd/user");
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating {}", dir.display()))?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     Ok(dir.join(UNIT_NAME))
 }
 
