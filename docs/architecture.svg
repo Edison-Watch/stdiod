@@ -1,56 +1,71 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 360" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="stdiod bridges a remote backend to local stdio MCP servers over one outbound WebSocket">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 380" font-family="Archivo, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="stdiod bridges the Edison backend to local stdio MCP servers over one outbound WebSocket">
   <defs>
-    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="#C3FFFD"/>
     </marker>
-    <marker id="arrow-start" markerWidth="10" markerHeight="10" refX="0" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M8,0 L0,3 L8,6 Z" fill="#475569"/>
+    <marker id="arrow-start" markerWidth="9" markerHeight="9" refX="0" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M7,0 L0,3 L7,6 Z" fill="#C3FFFD"/>
     </marker>
   </defs>
 
-  <rect width="980" height="360" fill="#ffffff"/>
+  <!-- Void Black background -->
+  <rect width="1000" height="380" fill="#000000"/>
+
+  <!-- grid markers: occasional cyan dashes on the invisible grid -->
+  <g stroke="#C3FFFD" stroke-width="1.5" opacity="0.45">
+    <path d="M186,60 h10 M191,55 v10"/>
+    <path d="M490,52 h10 M495,47 v10"/>
+    <path d="M800,60 h10 M805,55 v10"/>
+    <path d="M96,330 h10 M101,325 v10"/>
+    <path d="M620,346 h10 M625,341 v10"/>
+    <path d="M930,84 h10 M935,79 v10"/>
+  </g>
 
   <!-- user's machine boundary -->
-  <rect x="520" y="74" width="438" height="214" rx="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 5"/>
-  <text x="536" y="98" font-size="13" font-weight="600" fill="#64748b">user's machine</text>
+  <rect x="545" y="96" width="447" height="200" fill="none" stroke="#5E6575" stroke-width="1.5" stroke-dasharray="6 6"/>
+  <text x="561" y="116" font-size="12" font-weight="600" letter-spacing="2" fill="#9BA4A6">USER'S MACHINE</text>
 
-  <!-- AI client -->
-  <rect x="24" y="146" width="120" height="64" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.8"/>
-  <text x="84" y="183" font-size="14" font-weight="600" fill="#3730a3" text-anchor="middle">AI client</text>
+  <!-- AI client (Hackbox: tag top-left) -->
+  <rect x="30" y="150" width="130" height="80" fill="none" stroke="#C3FFFD" stroke-width="2"/>
+  <rect x="30" y="150" width="52" height="8" fill="#C3FFFD"/>
+  <text x="95" y="195" font-size="15" font-weight="600" fill="#FFFFFF" text-anchor="middle">AI client</text>
 
-  <!-- Edison backend gateway -->
-  <rect x="206" y="134" width="180" height="88" rx="10" fill="#ecfeff" stroke="#06b6d4" stroke-width="1.8"/>
-  <text x="296" y="172" font-size="14" font-weight="600" fill="#0e7490" text-anchor="middle">Edison backend</text>
-  <text x="296" y="192" font-size="14" font-weight="600" fill="#0e7490" text-anchor="middle">gateway</text>
-  <text x="296" y="210" font-size="11" fill="#0891b2" text-anchor="middle">source of truth</text>
+  <!-- Edison backend gateway (Hackbox: tag bottom-right) -->
+  <rect x="220" y="140" width="180" height="100" fill="none" stroke="#C3FFFD" stroke-width="2"/>
+  <rect x="328" y="230" width="72" height="10" fill="#C3FFFD"/>
+  <text x="310" y="180" font-size="15" font-weight="600" fill="#FFFFFF" text-anchor="middle">Edison backend</text>
+  <text x="310" y="199" font-size="15" font-weight="600" fill="#FFFFFF" text-anchor="middle">gateway</text>
+  <text x="310" y="217" font-size="11" fill="#9BA4A6" text-anchor="middle">source of truth</text>
 
-  <!-- stdiod daemon -->
-  <rect x="560" y="134" width="170" height="88" rx="10" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.8"/>
-  <text x="645" y="172" font-size="14" font-weight="600" fill="#15803d" text-anchor="middle">stdiod</text>
-  <text x="645" y="192" font-size="12" fill="#16a34a" text-anchor="middle">daemon + CLI</text>
-  <text x="645" y="210" font-size="11" fill="#16a34a" text-anchor="middle">supervises children</text>
+  <!-- stdiod daemon (Hackbox: tag top-left) -->
+  <rect x="580" y="140" width="170" height="100" fill="none" stroke="#C3FFFD" stroke-width="2"/>
+  <rect x="580" y="140" width="68" height="10" fill="#C3FFFD"/>
+  <text x="665" y="182" font-size="15" font-weight="600" fill="#FFFFFF" text-anchor="middle">stdiod</text>
+  <text x="665" y="200" font-size="12" fill="#9BA4A6" text-anchor="middle">daemon + CLI</text>
+  <text x="665" y="217" font-size="11" fill="#9BA4A6" text-anchor="middle">supervises children</text>
 
-  <!-- local MCP servers (stacked) -->
-  <rect x="800" y="138" width="138" height="84" rx="10" fill="#fde68a" stroke="#eab308" stroke-width="1.6"/>
-  <rect x="792" y="130" width="138" height="84" rx="10" fill="#fef9c3" stroke="#eab308" stroke-width="1.8"/>
-  <text x="861" y="166" font-size="13" font-weight="600" fill="#854d0e" text-anchor="middle">local stdio</text>
-  <text x="861" y="184" font-size="13" font-weight="600" fill="#854d0e" text-anchor="middle">MCP servers</text>
-  <text x="861" y="202" font-size="11" fill="#a16207" text-anchor="middle">child processes</text>
+  <!-- local MCP servers (Hackbox stack: tag bottom-right) -->
+  <rect x="818" y="148" width="152" height="92" fill="none" stroke="#5E6575" stroke-width="1.5"/>
+  <rect x="810" y="140" width="152" height="100" fill="none" stroke="#C3FFFD" stroke-width="2"/>
+  <rect x="901" y="230" width="61" height="10" fill="#C3FFFD"/>
+  <text x="886" y="180" font-size="14" font-weight="600" fill="#FFFFFF" text-anchor="middle">local stdio</text>
+  <text x="886" y="198" font-size="14" font-weight="600" fill="#FFFFFF" text-anchor="middle">MCP servers</text>
+  <text x="886" y="216" font-size="11" fill="#9BA4A6" text-anchor="middle">child processes</text>
 
   <!-- AI client <-> backend (MCP) -->
-  <line x1="148" y1="178" x2="202" y2="178" stroke="#475569" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)"/>
-  <text x="175" y="168" font-size="11" fill="#475569" text-anchor="middle">MCP</text>
+  <line x1="160" y1="190" x2="218" y2="190" stroke="#C3FFFD" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow-start)"/>
+  <text x="189" y="180" font-size="11" fill="#9BA4A6" text-anchor="middle">MCP</text>
 
   <!-- backend <-> daemon (the tunnel) -->
-  <line x1="390" y1="178" x2="556" y2="178" stroke="#475569" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)"/>
-  <text x="473" y="158" font-size="12" font-weight="600" fill="#334155" text-anchor="middle">one WebSocket tunnel</text>
-  <text x="473" y="198" font-size="11" fill="#64748b" text-anchor="middle">outbound · TLS 443 · Bearer auth</text>
-  <text x="473" y="214" font-size="11" fill="#64748b" text-anchor="middle">no inbound ports</text>
+  <line x1="400" y1="190" x2="578" y2="190" stroke="#C3FFFD" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow-start)"/>
+  <text x="489" y="168" font-size="12" font-weight="600" letter-spacing="1" fill="#FFFFFF" text-anchor="middle">ONE WEBSOCKET TUNNEL</text>
+  <text x="489" y="207" font-size="11" fill="#9BA4A6" text-anchor="middle">outbound · no inbound ports</text>
+  <text x="489" y="222" font-size="11" fill="#9BA4A6" text-anchor="middle">TLS 443 · Bearer auth</text>
 
   <!-- daemon <-> MCP servers -->
-  <line x1="734" y1="178" x2="788" y2="178" stroke="#475569" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)"/>
-  <text x="761" y="168" font-size="11" fill="#475569" text-anchor="middle">stdio</text>
+  <line x1="750" y1="190" x2="808" y2="190" stroke="#C3FFFD" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow-start)"/>
+  <text x="779" y="180" font-size="11" fill="#9BA4A6" text-anchor="middle">stdio</text>
 
   <!-- footer note -->
-  <text x="490" y="324" font-size="13" fill="#475569" text-anchor="middle">Processes, files, and credentials stay on the user's device — the daemon only dials out.</text>
+  <text x="500" y="344" font-size="13" fill="#9BA4A6" text-anchor="middle">Processes, files, and credentials stay on the user's device — the daemon only dials out.</text>
 </svg>
