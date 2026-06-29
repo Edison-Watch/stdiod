@@ -25,10 +25,9 @@
 
 **stdiod** is a small Rust daemon that bridges local [stdio MCP servers](https://modelcontextprotocol.io/) to the Edison Watch backend over one outbound WebSocket tunnel. It runs on a user's machine, dials out to the backend (no inbound ports), and lets the backend drive locally-spawned MCP server subprocesses — forwarding MCP frames in both directions. An AI client talking to the backend's gateway reaches these local servers as if they were hosted remotely, while the processes (and their filesystem and credentials) stay on the user's device.
 
-```
-AI client ──▶ Edison backend gateway ──▶  WebSocket tunnel  ──▶ stdiod ──▶ local MCP server subprocess
-                                          (outbound, from the device)
-```
+<p align="center">
+  <img src="docs/architecture.svg" alt="An AI client reaches the Edison backend gateway, which drives the stdiod daemon over a single outbound WebSocket tunnel; the daemon spawns and supervises local stdio MCP servers on the user's machine." width="760">
+</p>
 
 > [!WARNING]
 > **Experimental (v0.0.1).** Early software under active development; expect bugs. It has **not** had an independent security audit. The wire protocol, CLI surface, and on-disk formats may change without notice before a 1.0 release. Today the daemon runs as a supervised service on **macOS only** — Linux and Windows support is on the roadmap, and the CLI will tell you when a step is unsupported on your platform.

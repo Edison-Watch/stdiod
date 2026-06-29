@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 360" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="stdiod bridges a remote backend to local stdio MCP servers over one outbound WebSocket">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-start" markerWidth="10" markerHeight="10" refX="0" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M8,0 L0,3 L8,6 Z" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <rect width="980" height="360" fill="#ffffff"/>
+
+  <!-- user's machine boundary -->
+  <rect x="520" y="74" width="438" height="214" rx="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="536" y="98" font-size="13" font-weight="600" fill="#64748b">user's machine</text>
+
+  <!-- AI client -->
+  <rect x="24" y="146" width="120" height="64" rx="10" fill="#eef2ff" stroke="#6366f1" stroke-width="1.8"/>
+  <text x="84" y="183" font-size="14" font-weight="600" fill="#3730a3" text-anchor="middle">AI client</text>
+
+  <!-- Edison backend gateway -->
+  <rect x="206" y="134" width="180" height="88" rx="10" fill="#ecfeff" stroke="#06b6d4" stroke-width="1.8"/>
+  <text x="296" y="172" font-size="14" font-weight="600" fill="#0e7490" text-anchor="middle">Edison backend</text>
+  <text x="296" y="192" font-size="14" font-weight="600" fill="#0e7490" text-anchor="middle">gateway</text>
+  <text x="296" y="210" font-size="11" fill="#0891b2" text-anchor="middle">source of truth</text>
+
+  <!-- stdiod daemon -->
+  <rect x="560" y="134" width="170" height="88" rx="10" fill="#f0fdf4" stroke="#22c55e" stroke-width="1.8"/>
+  <text x="645" y="172" font-size="14" font-weight="600" fill="#15803d" text-anchor="middle">stdiod</text>
+  <text x="645" y="192" font-size="12" fill="#16a34a" text-anchor="middle">daemon + CLI</text>
+  <text x="645" y="210" font-size="11" fill="#16a34a" text-anchor="middle">supervises children</text>
+
+  <!-- local MCP servers (stacked) -->
+  <rect x="800" y="138" width="138" height="84" rx="10" fill="#fde68a" stroke="#eab308" stroke-width="1.6"/>
+  <rect x="792" y="130" width="138" height="84" rx="10" fill="#fef9c3" stroke="#eab308" stroke-width="1.8"/>
+  <text x="861" y="166" font-size="13" font-weight="600" fill="#854d0e" text-anchor="middle">local stdio</text>
+  <text x="861" y="184" font-size="13" font-weight="600" fill="#854d0e" text-anchor="middle">MCP servers</text>
+  <text x="861" y="202" font-size="11" fill="#a16207" text-anchor="middle">child processes</text>
+
+  <!-- AI client <-> backend (MCP) -->
+  <line x1="148" y1="178" x2="202" y2="178" stroke="#475569" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)"/>
+  <text x="175" y="168" font-size="11" fill="#475569" text-anchor="middle">MCP</text>
+
+  <!-- backend <-> daemon (the tunnel) -->
+  <line x1="390" y1="178" x2="556" y2="178" stroke="#475569" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)"/>
+  <text x="473" y="158" font-size="12" font-weight="600" fill="#334155" text-anchor="middle">one WebSocket tunnel</text>
+  <text x="473" y="198" font-size="11" fill="#64748b" text-anchor="middle">outbound · TLS 443 · Bearer auth</text>
+  <text x="473" y="214" font-size="11" fill="#64748b" text-anchor="middle">no inbound ports</text>
+
+  <!-- daemon <-> MCP servers -->
+  <line x1="734" y1="178" x2="788" y2="178" stroke="#475569" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow-start)"/>
+  <text x="761" y="168" font-size="11" fill="#475569" text-anchor="middle">stdio</text>
+
+  <!-- footer note -->
+  <text x="490" y="324" font-size="13" fill="#475569" text-anchor="middle">Processes, files, and credentials stay on the user's device — the daemon only dials out.</text>
+</svg>
