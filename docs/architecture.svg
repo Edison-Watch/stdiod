@@ -45,7 +45,6 @@
     <polygon points="120,402 890,402 912,424 98,424"/>
     <path d="M485,424 h40" stroke="#5E6575" stroke-width="2"/>
   </g>
-  <rect x="120" y="398" width="770" height="4" fill="#C3FFFD"/>
   <text x="140" y="278" font-size="12" font-weight="600" letter-spacing="2" fill="#9BA4A6">USER'S MACHINE</text>
 
   <!-- AI client (Hackbox: tag top-left) -->
