@@ -26,10 +26,6 @@
     <path d="M885,205 h10 M890,200 v10"/>
   </g>
 
-  <!-- ============================ REMOTE (cloud) ============================ -->
-  <rect x="48" y="58" width="545" height="114" fill="none" stroke="#5E6575" stroke-width="1.5" stroke-dasharray="6 6"/>
-  <text x="64" y="80" font-size="12" font-weight="600" letter-spacing="2" fill="#9BA4A6">REMOTE (cloud)</text>
-
   <!-- remote LLM API (third-party, external) -->
   <rect x="70" y="92" width="150" height="58" fill="none" stroke="#9BA4A6" stroke-width="1.5" stroke-dasharray="5 4"/>
   <text x="145" y="120" font-size="13" font-weight="600" fill="#C8C8C8" text-anchor="middle">remote LLM API</text>
