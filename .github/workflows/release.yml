@@ -74,7 +74,7 @@ jobs:
       # Always available: download from the run's Artifacts section to inspect a
       # build without publishing a Release (e.g. manual workflow_dispatch runs).
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ASSET_NAME }}
           path: |
