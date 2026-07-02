@@ -36,8 +36,25 @@ use crate::tunnel::OutgoingHandle;
 /// CreateProcess can't launch them directly and `Command::new` doesn't apply
 /// PATHEXT.
 fn build_child_command(program: &str, args: &[String]) -> Command {
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
+        // Resolve against the augmented PATH (interactive login-shell PATH ∪ the
+        // daemon PATH) so version-manager node/npx (nvm/fnm/volta) is found, and
+        // set it on the child so a resolved `npx` can in turn find `node`. Linux
+        // only: the systemd `--user` unit's PATH omits shell-rc additions.
+        let path = linux::augmented_path();
+        let mut cmd = match linux::resolve_program(program, &path) {
+            Some(abs) => Command::new(abs),
+            None => Command::new(program),
+        };
+        cmd.args(args);
+        cmd.env("PATH", &path);
+        cmd
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        // macOS / other Unix: inherit the daemon PATH as-is (the macOS
+        // LaunchAgent plist already sets it wide enough for npx/uvx).
         let mut cmd = Command::new(program);
         cmd.args(args);
         cmd
@@ -85,6 +102,106 @@ fn build_child_command(program: &str, args: &[String]) -> Command {
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.env("PATH", path);
         cmd
+    }
+}
+
+/// One-time child-spawn environment setup, run once at daemon startup.
+///
+/// On Linux, resolves the user's *interactive login-shell* PATH so child MCP
+/// servers can find node/npx/uvx installed via a version manager (nvm/fnm/volta/
+/// asdf) - whose PATH additions live in shell rc files that the systemd `--user`
+/// service never sources. No-op on macOS (the LaunchAgent plist already sets a
+/// wide PATH) and Windows (bundled-runtimes PATH augmentation in `win`).
+pub(crate) async fn init_child_env() {
+    #[cfg(target_os = "linux")]
+    linux::init_augmented_path().await;
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::collections::HashSet;
+    use std::ffi::{OsStr, OsString};
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+    use std::time::Duration;
+
+    // Login-shell PATH ∪ daemon PATH, resolved once by init_augmented_path().
+    static AUGMENTED_PATH: OnceLock<OsString> = OnceLock::new();
+
+    /// Resolve + cache the augmented PATH. Idempotent; best-effort (on failure
+    /// or timeout the cache stays empty and augmented_path() uses the daemon PATH).
+    pub async fn init_augmented_path() {
+        if AUGMENTED_PATH.get().is_some() {
+            return;
+        }
+        let merged = merge_paths(login_shell_path().await, std::env::var_os("PATH"));
+        let _ = AUGMENTED_PATH.set(merged);
+    }
+
+    /// PATH to use for child spawns: the cached login-shell∪daemon PATH, or the
+    /// daemon PATH if init hasn't run / the shell probe failed.
+    pub fn augmented_path() -> OsString {
+        AUGMENTED_PATH
+            .get()
+            .cloned()
+            .unwrap_or_else(|| std::env::var_os("PATH").unwrap_or_default())
+    }
+
+    /// Capture `$PATH` as the user's interactive login shell sees it (so
+    /// nvm/fnm/volta setup in rc files is applied). Markers isolate the value
+    /// from any banner an rc file prints to stdout; stdin is null so an rc that
+    /// reads input can't hang; the probe is bounded by a timeout.
+    async fn login_shell_path() -> Option<OsString> {
+        const START: &str = "__EW_PATH_START__";
+        const END: &str = "__EW_PATH_END__";
+        let shell = std::env::var_os("SHELL").unwrap_or_else(|| OsString::from("/bin/bash"));
+        let mut cmd = tokio::process::Command::new(&shell);
+        cmd.arg("-lic")
+            .arg(format!("printf '{START}%s{END}' \"$PATH\""))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let out = tokio::time::timeout(Duration::from_secs(5), cmd.output())
+            .await
+            .ok()? // timed out
+            .ok()?; // spawn/exec failed
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let path = stdout.split_once(START)?.1.split_once(END)?.0;
+        (!path.is_empty()).then(|| OsString::from(path))
+    }
+
+    /// Merge two PATH values: entries from `primary` first, then any from
+    /// `secondary` not already present. Order-preserving, de-duplicated.
+    fn merge_paths(primary: Option<OsString>, secondary: Option<OsString>) -> OsString {
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        for src in [primary, secondary].into_iter().flatten() {
+            for dir in std::env::split_paths(&src) {
+                if seen.insert(dir.clone()) {
+                    dirs.push(dir);
+                }
+            }
+        }
+        std::env::join_paths(dirs).unwrap_or_default()
+    }
+
+    /// Resolve `program` to an absolute path against `path`. A name that already
+    /// contains '/' is returned as-is; a bare name is searched on each PATH dir.
+    /// None when not found (the caller keeps the bare name, so spawn still errors
+    /// with a clear "not found" rather than silently doing nothing).
+    pub fn resolve_program(program: &str, path: &OsStr) -> Option<PathBuf> {
+        if program.contains('/') {
+            return Some(PathBuf::from(program));
+        }
+        std::env::split_paths(path)
+            .map(|dir| dir.join(program))
+            .find(|cand| is_executable(cand))
+    }
+
+    fn is_executable(p: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
     }
 }
 
