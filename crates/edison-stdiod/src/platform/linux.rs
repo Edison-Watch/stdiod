@@ -98,7 +98,7 @@ fn render_unit(binary: &Path, log: &Path) -> String {
          \n\
          [Service]\n\
          Type=simple\n\
-         ExecStart={bin} run\n\
+         ExecStart=\"{bin}\" run\n\
          Restart=on-failure\n\
          RestartSec=5\n\
          Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin\n\
@@ -242,7 +242,7 @@ mod tests {
             Path::new("/usr/local/bin/edison-stdiod"),
             Path::new("/home/me/.local/state/edison-stdiod/daemon.log"),
         );
-        assert!(body.contains("ExecStart=/usr/local/bin/edison-stdiod run"));
+        assert!(body.contains("ExecStart=\"/usr/local/bin/edison-stdiod\" run"));
         assert!(body.contains("Restart=on-failure"));
         assert!(body.contains("WantedBy=default.target"));
         assert!(body.contains("[Service]"));
