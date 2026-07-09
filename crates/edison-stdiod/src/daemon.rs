@@ -109,6 +109,12 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 pub async fn run(args: RunArgs) -> Result<()> {
     let resolved = ResolvedRun::from_args(args)?;
+
+    // Resolve the interactive login-shell PATH once, up front, so child MCP
+    // servers can find version-manager node/npx (nvm/fnm/...) - the daemon's own
+    // (systemd/launchd) PATH doesn't include shell-rc additions. See proc.rs.
+    crate::proc::init_child_env().await;
+
     // The supervisor - and the broker handle the children depend on -
     // live across reconnects. ``apply_snapshot`` on each new WS will
     // diff and reconcile.

@@ -92,3 +92,65 @@ jobs:
             dist/SHA256SUMS
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+  linux:
+    name: Linux static musl (x64 + arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Both musl targets; built fully STATIC so the published binary has zero
+      # glibc/libc dependency and runs on any distro (incl. Alpine / containers).
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      # zig + cargo-zigbuild supply a C cross-toolchain for `ring`'s C-crypto,
+      # which can't be cross-built to musl with the stock toolchain. Mirrors the
+      # desktop repo's scripts/build-stdiod-linux.sh.
+      - uses: mlugg/setup-zig@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Build static musl (both arches)
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for spec in "x64:x86_64-unknown-linux-musl" "arm64:aarch64-unknown-linux-musl"; do
+            arch="${spec%%:*}"; target="${spec##*:}"
+            echo "Building $target ..."
+            cargo zigbuild --release --bin "$BIN_NAME" --target "$target"
+            cp "target/$target/release/$BIN_NAME" "dist/edison-stdiod-linux-$arch"
+            chmod +x "dist/edison-stdiod-linux-$arch"
+          done
+          file dist/edison-stdiod-linux-*
+          # x64 binary is native to this runner - smoke-test it.
+          ./dist/edison-stdiod-linux-x64 --version || true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: shasum -a 256 edison-stdiod-linux-x64 edison-stdiod-linux-arm64 > SHA256SUMS-linux
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: edison-stdiod-linux
+          path: |
+            dist/edison-stdiod-linux-x64
+            dist/edison-stdiod-linux-arm64
+            dist/SHA256SUMS-linux
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/edison-stdiod-linux-x64
+            dist/edison-stdiod-linux-arm64
+            dist/SHA256SUMS-linux
+          fail_on_unmatched_files: true
+          generate_release_notes: true

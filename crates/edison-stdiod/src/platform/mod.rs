@@ -35,19 +35,32 @@ pub use windows::{install, uninstall};
 #[allow(unused_imports)]
 pub use windows::{is_installed, is_running};
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+pub mod linux;
+
+#[cfg(target_os = "linux")]
+pub use linux::{install, uninstall};
+
+#[cfg(target_os = "linux")]
+#[allow(unused_imports)]
+pub use linux::{is_installed, is_running};
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 mod stub {
     use anyhow::{anyhow, Result};
 
     pub fn install() -> Result<()> {
         Err(anyhow!(
-            "install is only implemented for macOS in v1. \
-             See stdiod/ARCHITECTURE.md for the Linux / Windows roadmap.",
+            "install is implemented for macOS, Linux (systemd), and Windows. \
+             This OS has no supervisor integration - run `edison-stdiod run` \
+             directly. See stdiod/REQUIREMENTS.md.",
         ))
     }
 
     pub fn uninstall() -> Result<()> {
-        Err(anyhow!("uninstall is only implemented for macOS in v1.",))
+        Err(anyhow!(
+            "uninstall is implemented for macOS, Linux (systemd), and Windows.",
+        ))
     }
 
     pub fn is_installed() -> Result<bool> {
@@ -59,5 +72,5 @@ mod stub {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub use stub::{install, is_installed, is_running, uninstall};
