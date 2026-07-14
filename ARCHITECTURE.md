@@ -61,7 +61,7 @@ platform-specific service integration (macOS / Linux / Windows).
 The wire-protocol Rust types are **generated from a JSON Schema** (via
 `schemars`/`typify`). The schema is the single source of truth so the daemon and
 its peer can be kept in lock-step; see
-[`schema/tunnel-protocol.json`](./schema/tunnel-protocol.json).
+[`schema/edison-tunnel-protocol.json`](./schema/edison-tunnel-protocol.json).
 
 ## Tunnel mechanism: reverse RPC over WebSocket
 
@@ -85,7 +85,7 @@ reverse tunnel because:
 
 ### Wire protocol
 
-Defined as JSON Schema at `schema/tunnel-protocol.json`. Frames are JSON with a
+Defined as JSON Schema at `schema/edison-tunnel-protocol.json`. Frames are JSON with a
 `type` discriminator and fall into two categories.
 
 **Control frames** (lifecycle / desired state):

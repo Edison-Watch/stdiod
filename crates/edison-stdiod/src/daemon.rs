@@ -24,7 +24,7 @@ use clap::Args;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
-use tunnel_protocol::{
+use edison_tunnel_protocol::{
     ClientHello, DesiredServer, DesiredStateUpdate, McpFrame, ServerHello, ServerSpawnResult,
     ServerSpecUpdate, TunnelError, TunnelFrame, PROTOCOL_VERSION,
 };

@@ -140,13 +140,13 @@ fn missing(name: &str, flag: &str) -> anyhow::Error {
 }
 
 /// Detected OS, mapped to the wire-protocol `Os` enum.
-pub fn current_os() -> tunnel_protocol::Os {
+pub fn current_os() -> edison_tunnel_protocol::Os {
     if cfg!(target_os = "macos") {
-        tunnel_protocol::Os::Macos
+        edison_tunnel_protocol::Os::Macos
     } else if cfg!(target_os = "linux") {
-        tunnel_protocol::Os::Linux
+        edison_tunnel_protocol::Os::Linux
     } else {
-        tunnel_protocol::Os::Windows
+        edison_tunnel_protocol::Os::Windows
     }
 }
 

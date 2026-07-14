@@ -10,7 +10,7 @@ kept here as a historical record, not part of the daemon build.
 
 ```
 stub_mcp_server.py   FastMCP stdio server: add, slow_count, ask_sample, crash
-tunnel_protocol.py   Pydantic models for the wire envelope (ClientHello,
+edison_tunnel_protocol.py   Pydantic models for the wire envelope (ClientHello,
                      ServerHello, McpFrame, TunnelError)
 tunnel_transport.py  Custom ClientTransport. Wraps SessionMessages as
                      McpFrames; unwraps inbound frames into ClientSession's
