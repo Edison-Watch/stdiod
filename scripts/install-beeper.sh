@@ -30,6 +30,11 @@
 
 set -euo pipefail
 
+# Keep edison-stdiod (anyhow) from spilling a Rust backtrace on expected
+# failures; we translate its exit codes into actionable messages ourselves.
+export RUST_BACKTRACE="${RUST_BACKTRACE:-0}"
+export RUST_LIB_BACKTRACE="${RUST_LIB_BACKTRACE:-0}"
+
 # ---------------------------------------------------------------------------
 # Defaults (every one overridable by flag or environment variable)
 # ---------------------------------------------------------------------------
@@ -81,9 +86,15 @@ confirm() {
   printf '%s [y/N] ' "$1" >&2; read -r ans; [ "$ans" = "y" ] || [ "$ans" = "Y" ]
 }
 
-require_macos() {
-  [ "$(uname -s)" = "Darwin" ] || die "the stdiod daemon is macOS-only today" \
-    "Linux and Windows support is on the roadmap; see stdiod/README.md"
+# macOS is the supported target. The binary also carries a Linux (systemd
+# --user) path, so we allow Linux with a warning instead of blocking, and let
+# `edison-stdiod install` report any capability gap itself. Windows is out.
+require_supported_platform() {
+  case "$(uname -s)" in
+    Darwin) ;;
+    Linux)  log "warning: Linux support in edison-stdiod is experimental (needs a systemd --user session); macOS is the supported target";;
+    *)      die "unsupported platform: $(uname -s)" "macOS is supported; Linux is experimental; see stdiod/README.md";;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -116,7 +127,7 @@ parse_flags() {
 # Step 1: prerequisites
 # ---------------------------------------------------------------------------
 ensure_deps() {
-  require_macos
+  require_supported_platform
 
   if ! command -v npx >/dev/null 2>&1; then
     if [ "$INSTALL_DEPS" -eq 1 ]; then
@@ -172,6 +183,11 @@ ensure_beeper_token() {
     log "beeper token: using supplied token"
     return 0
   fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "beeper token: would mint via CLI (or require --beeper-token)"
+    BEEPER_ACCESS_TOKEN="dry-run-placeholder-token"
+    return 0
+  fi
   # The CLI can mint a Desktop API token for approved connections without a
   # browser once the server is authorized. If your CLI version exposes a
   # different verb, pass the token in via --beeper-token / BEEPER_ACCESS_TOKEN.
@@ -203,17 +219,28 @@ ensure_ew_api_key() {
 # Step 4b: supervise the tunnel daemon and register the Beeper child
 # ---------------------------------------------------------------------------
 wire_tunnel() {
-  run edison-stdiod login --backend "$EW_BACKEND" --api-key "$EW_API_KEY" --device-label "$DEVICE_LABEL"
-  run edison-stdiod install
+  # Each step is wrapped so a failure yields a clean, actionable message
+  # instead of a raw daemon backtrace plus a set -e abort mid-flow.
+  if ! run edison-stdiod login --backend "$EW_BACKEND" --api-key "$EW_API_KEY" --device-label "$DEVICE_LABEL"; then
+    die "edison-stdiod login failed" "check --ew-backend and --ew-api-key, then re-run: $PROG install"
+  fi
+  if ! run edison-stdiod install; then
+    die "edison-stdiod install could not register the supervisor unit" \
+      "macOS needs no privileges; Linux needs a logged-in systemd --user session. Fix that, then re-run: $PROG install"
+  fi
 
-  # Idempotent: only add the child if it is not already registered.
-  if edison-stdiod server list --json 2>/dev/null | grep -q "\"$SERVER_NAME\""; then
+  # Idempotent: only add the child if it is not already registered. The live
+  # probe is skipped under --dry-run (nothing is registered to probe).
+  if [ "$DRY_RUN" -eq 0 ] && edison-stdiod server list --json 2>/dev/null | grep -q "\"$SERVER_NAME\""; then
     log "tunnel child '$SERVER_NAME': already registered"
   else
-    run edison-stdiod server add "$SERVER_NAME" \
-      --display-name "Beeper" \
-      --command npx \
-      --arg -y --arg "$MCP_PKG"
+    if ! run edison-stdiod server add "$SERVER_NAME" \
+        --display-name "Beeper" \
+        --command npx \
+        --arg -y --arg "$MCP_PKG"; then
+      die "edison-stdiod server add failed for '$SERVER_NAME'" \
+        "confirm the daemon is logged in and the backend is reachable, then re-run: $PROG install"
+    fi
     log "tunnel child '$SERVER_NAME': registered"
   fi
 }
@@ -235,10 +262,11 @@ bind_beeper_token() {
     return 0
   fi
   local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$url" \
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 15 --connect-timeout 5 -X POST "$url" \
     -H "Authorization: Bearer ${EW_API_KEY}" \
     -H "Content-Type: application/json" \
-    --data "{\"env\":{\"BEEPER_ACCESS_TOKEN\":\"${BEEPER_ACCESS_TOKEN}\"}}" 2>/dev/null || echo 000)"
+    --data "{\"env\":{\"BEEPER_ACCESS_TOKEN\":\"${BEEPER_ACCESS_TOKEN}\"}}" 2>/dev/null || true)"
+  [ -z "$code" ] && code="000"
   case "$code" in
     2*) log "beeper token: bound to child '$SERVER_NAME' as an Edison secret";;
     *)  log "warning: could not bind the Beeper token via ${url} (http ${code})"
@@ -252,9 +280,10 @@ bind_beeper_token() {
 # ---------------------------------------------------------------------------
 add_networks() {
   [ -z "$NETWORKS" ] && return 0
-  local IFS=','
-  for net in $NETWORKS; do
-    net="$(printf '%s' "$net" | tr -d '[:space:]')"
+  # Split on commas without leaking IFS into run()'s "$*" logging.
+  local net nets
+  nets="$(printf '%s' "$NETWORKS" | tr ',' ' ')"
+  for net in $nets; do
     [ -z "$net" ] && continue
     log "network: adding '$net' (follow the QR / code prompt in this terminal)"
     run beeper accounts add "$net"
