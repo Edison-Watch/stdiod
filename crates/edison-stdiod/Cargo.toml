@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Edison Watch stdio MCP server daemon - bridges local stdio MCP servers to the backend tunnel."
+readme = "../../README.md"
 
 [[bin]]
 name = "edison-stdiod"
@@ -26,5 +27,5 @@ tokio-tungstenite = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-tunnel-protocol = { workspace = true }
+edison-tunnel-protocol = { workspace = true }
 url = "2"

@@ -39,7 +39,7 @@
 - **Child supervision.** The backend pushes a desired set of servers; the daemon spawns/stops the matching subprocesses and pumps their stdio.
 - **Survival.** It reconnects with backoff across network blips and machine sleep/resume, and reconciles desired state on every (re)connect.
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the full design and [`schema/tunnel-protocol.json`](./schema/tunnel-protocol.json) for the wire protocol - the single source of truth for the frame types.
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the full design and [`schema/edison-tunnel-protocol.json`](./schema/edison-tunnel-protocol.json) for the wire protocol - the single source of truth for the frame types.
 
 ## Install
 
@@ -223,7 +223,7 @@ cargo fmt --all --check      # formatting
 cargo clippy --workspace --all-targets -- -D warnings   # lints
 ```
 
-The `tunnel-protocol` crate's Rust types are generated from [`schema/tunnel-protocol.json`](./schema/tunnel-protocol.json) - keep the schema and the generated types in lock-step.
+The `edison-tunnel-protocol` crate's Rust types are generated from [`schema/edison-tunnel-protocol.json`](./schema/edison-tunnel-protocol.json) - keep the schema and the generated types in lock-step.
 
 [`dev/spike/`](./dev/spike/) holds a throwaway v0 Python prototype that validated the wire protocol before the Rust daemon was written; it is kept as a historical record and is not part of the build.
 

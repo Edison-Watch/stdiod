@@ -282,6 +282,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "edison-tunnel-protocol",
  "futures-util",
  "once_cell",
  "reqwest",
@@ -293,8 +294,15 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
- "tunnel-protocol",
  "url",
+]
+
+[[package]]
+name = "edison-tunnel-protocol"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1559,14 +1567,6 @@ dependencies = [
  "rustls-pki-types",
  "sha1",
  "thiserror",
-]
-
-[[package]]
-name = "tunnel-protocol"
-version = "0.0.1"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]

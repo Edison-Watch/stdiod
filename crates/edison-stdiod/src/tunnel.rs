@@ -12,6 +12,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
+use edison_tunnel_protocol::TunnelFrame;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -20,7 +21,6 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{debug, info, warn};
-use tunnel_protocol::TunnelFrame;
 
 pub type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 

@@ -21,13 +21,13 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Result};
 use clap::Args;
-use tokio::sync::{mpsc, Mutex};
-use tokio::time::sleep;
-use tracing::{debug, info, warn};
-use tunnel_protocol::{
+use edison_tunnel_protocol::{
     ClientHello, DesiredServer, DesiredStateUpdate, McpFrame, ServerHello, ServerSpawnResult,
     ServerSpecUpdate, TunnelError, TunnelFrame, PROTOCOL_VERSION,
 };
+use tokio::sync::{mpsc, Mutex};
+use tokio::time::sleep;
+use tracing::{debug, info, warn};
 
 use crate::config;
 use crate::env_store::{resolve_env_for_spawn, substitute_templated_args, EnvStore};

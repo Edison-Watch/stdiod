@@ -16,12 +16,12 @@
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
+use edison_tunnel_protocol::{DesiredServer, McpFrame, TunnelError, TunnelFrame};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
-use tunnel_protocol::{DesiredServer, McpFrame, TunnelError, TunnelFrame};
 
 use crate::tunnel::OutgoingHandle;
 

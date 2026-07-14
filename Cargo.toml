@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "crates/edison-stdiod",
-    "crates/tunnel-protocol",
+    "crates/edison-tunnel-protocol",
 ]
 
 [workspace.package]
@@ -10,6 +10,8 @@ edition = "2021"
 version = "0.0.1"
 license = "AGPL-3.0-only"
 authors = ["Edison Watch"]
+repository = "https://github.com/Edison-Watch/stdiod"
+homepage = "https://github.com/Edison-Watch/stdiod"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -29,4 +31,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Workspace member crates
-tunnel-protocol = { path = "crates/tunnel-protocol" }
+edison-tunnel-protocol = { path = "crates/edison-tunnel-protocol", version = "0.0.1" }

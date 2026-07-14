@@ -40,7 +40,7 @@ cargo fmt --all --check && \
 - **Match the surrounding style.** Follow the existing naming, comment density,
   and module layout; `cargo fmt` handles formatting.
 - **Update docs alongside code.** If you change the wire protocol, update
-  [`schema/tunnel-protocol.json`](./schema/tunnel-protocol.json) (the single
+  [`schema/edison-tunnel-protocol.json`](./schema/edison-tunnel-protocol.json) (the single
   source of truth) and [`ARCHITECTURE.md`](./ARCHITECTURE.md). If you change the
   CLI or config, update [`README.md`](./README.md).
 - **Add tests** for new behavior where practical.
