@@ -381,12 +381,25 @@ ensure_beeper_token() {
 # Step 4a: Edison Watch account + API key
 # ---------------------------------------------------------------------------
 ensure_ew_api_key() {
-  if [ -n "$EW_API_KEY" ]; then
+  if [ -z "$EW_API_KEY" ]; then
+    die "no Edison Watch API key provided" \
+      "sign in at ${EW_BACKEND}, create an API key, then re-run with --ew-api-key edison_..."
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
     ok "edison account: using supplied API key"
     return 0
   fi
-  die "no Edison Watch API key provided" \
-    "sign in at ${EW_BACKEND}, create an API key, then re-run with --ew-api-key ew_live_..."
+  # Validate the key up front so a bad key fails here with a clear message,
+  # not mid-flow inside 'edison-stdiod server add'.
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 15 --connect-timeout 5 \
+    -H "Authorization: Bearer ${EW_API_KEY}" "${EW_BACKEND%/}/api/v1/servers" 2>/dev/null || true)"
+  case "$code" in
+    401|403) die "Edison rejected the API key at ${EW_BACKEND} (http ${code}: invalid or inactive)" \
+               "check the key is active and from this environment; for demo pass --ew-backend https://demo-dashboard.edison.watch";;
+    000)     warn "could not reach ${EW_BACKEND} to validate the key; continuing";;
+    *)       ok "edison account: API key accepted by ${EW_BACKEND}";;
+  esac
 }
 
 # ---------------------------------------------------------------------------
