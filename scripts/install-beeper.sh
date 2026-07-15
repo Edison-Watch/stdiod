@@ -231,7 +231,55 @@ ensure_beeper_server() {
 # ---------------------------------------------------------------------------
 # Step 3: Beeper access token (for the stdio MCP proxy child)
 # ---------------------------------------------------------------------------
-# Precedence: explicit token > CLI-issued token > fail with the manual step.
+# Show only a safe fingerprint of a secret, never the secret itself.
+mask_token() {
+  local s="$1"
+  [ "${#s}" -le 12 ] && { printf '<len %s>' "${#s}"; return; }
+  printf '%s...%s (len %s)' "${s:0:6}" "${s: -4}" "${#s}"
+}
+
+# discover_beeper_token - reuse the token the `beeper` CLI already holds after
+# `beeper setup`, so no GUI "Approved connections" step is needed. Beeper has no
+# headless mint (OAuth is authorization_code + PKCE, which needs a browser), but
+# the stored session token is a valid Desktop API bearer. We stay format-
+# agnostic: gather candidate strings from the CLI config dir and the macOS
+# Keychain, then keep the first that authenticates against the local OAuth
+# userinfo endpoint. Prints the working token to stdout; diagnostics to stderr.
+discover_beeper_token() {
+  local api="${BEEPER_API_URL:-http://127.0.0.1:23373}"
+  local uinfo
+  uinfo="$(curl -s -m 5 "$api/.well-known/oauth-authorization-server" 2>/dev/null \
+           | grep -oE '"userinfo_endpoint"[[:space:]]*:[[:space:]]*"[^"]+"' \
+           | grep -oE 'https?://[^"]+' | head -1)"
+  [ -z "$uinfo" ] && uinfo="$api/oauth/userinfo"
+
+  local cp cands=""
+  cp="$(beeper config path 2>/dev/null || true)"
+  if [ -n "$cp" ] && [ -e "$cp" ]; then
+    cands="$(find "$cp" -type f -exec cat {} + 2>/dev/null \
+             | grep -oE '[A-Za-z0-9._-]{24,}' | sort -u | head -n 60 || true)"
+  fi
+  if command -v security >/dev/null 2>&1; then
+    local svc kc
+    for svc in beeper Beeper beeper-cli com.beeper.cli "Beeper Desktop" "Beeper Desktop API"; do
+      kc="$(security find-generic-password -s "$svc" -w 2>/dev/null || true)"
+      [ -n "$kc" ] && cands="$cands
+$kc"
+    done
+  fi
+
+  local tok code
+  while IFS= read -r tok; do
+    [ -z "$tok" ] && continue
+    code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H "Authorization: Bearer $tok" "$uinfo" 2>/dev/null || true)"
+    if [ "$code" = "200" ]; then printf '%s' "$tok"; return 0; fi
+  done <<EOF
+$cands
+EOF
+  return 1
+}
+
+# Precedence: explicit token > reuse the CLI's session token > manual step.
 ensure_beeper_token() {
   step "Beeper access token"
   if [ -n "$BEEPER_ACCESS_TOKEN" ]; then
@@ -239,20 +287,22 @@ ensure_beeper_token() {
     return 0
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
-    info "would require --beeper-token (Beeper has no headless token mint)"
+    info "would reuse the Beeper CLI session token, else require --beeper-token"
     BEEPER_ACCESS_TOKEN="dry-run-placeholder-token"
     return 0
   fi
-  # Beeper exposes no headless command to mint a Desktop API token: tokens are
-  # created in the app UI (Approved connections). This is a one-time manual
-  # step; after it, everything else here is automated and idempotent.
-  warn "Beeper cannot mint a Desktop API token headlessly; create one once, then re-run"
-  warn "in Beeper Desktop: Settings > Developers > Beeper Desktop API (enable),"
-  warn "then Approved connections > +  to copy a token"
-  warn "re-run: $PROG install --ew-api-key <KEY> --beeper-token <TOKEN> --networks ${NETWORKS:-whatsapp}"
-  warn "(deps and the Beeper Server are already set up, so the re-run is fast)"
-  die "no Beeper access token provided" \
-    "pass --beeper-token <TOKEN> (or set BEEPER_ACCESS_TOKEN)"
+  local tok
+  if tok="$(discover_beeper_token)" && [ -n "$tok" ]; then
+    BEEPER_ACCESS_TOKEN="$tok"
+    ok "reusing the Beeper CLI's authorized session token, no GUI needed [$(mask_token "$tok")]"
+    return 0
+  fi
+  # Fallback: no reusable token and none supplied. Guide the one-time manual step.
+  warn "could not reuse a Beeper CLI token; is the Beeper Server running and logged in?"
+  warn "otherwise create one once in Beeper Desktop: Settings > Developers > Beeper Desktop API,"
+  warn "then Approved connections > +  to copy a token, and re-run with --beeper-token"
+  die "no Beeper access token available" \
+    "pass --beeper-token <TOKEN> (or set BEEPER_ACCESS_TOKEN); the re-run is fast, deps are already installed"
 }
 
 # ---------------------------------------------------------------------------
@@ -416,6 +466,22 @@ cmd_network() {
 
 cmd_mcp_url() { ensure_ew_api_key; print_mcp_url; }
 
+cmd_token() {
+  step "Discovering a Beeper access token (headless)"
+  if [ -n "$BEEPER_ACCESS_TOKEN" ]; then
+    ok "a token is already supplied [$(mask_token "$BEEPER_ACCESS_TOKEN")]"
+    return 0
+  fi
+  local tok
+  if tok="$(discover_beeper_token)" && [ -n "$tok" ]; then
+    ok "found a working token by reusing the Beeper CLI session [$(mask_token "$tok")]"
+    info "'$PROG install' will use this automatically; no --beeper-token needed"
+    return 0
+  fi
+  warn "no reusable token found (is the Beeper Server running and logged in?)"
+  die "no Beeper access token discovered" "pass --beeper-token <TOKEN>, or run 'beeper setup --server --install' first"
+}
+
 cmd_uninstall() {
   confirm "remove the stdiod supervisor unit and Beeper child?" || die "aborted" ""
   command -v edison-stdiod >/dev/null 2>&1 && {
@@ -442,6 +508,7 @@ Commands:
   network add    Link a chat network (whatsapp | telegram | linkedin | ...)
   network list   List linked chat networks
   mcp-url        Print the Edison MCP URL and client snippet
+  token          Discover a reusable Beeper token from the CLI session (headless, no GUI)
   uninstall      Remove the tunnel child and supervisor unit
 
 Common flags (also settable as UPPER_SNAKE env vars):
@@ -511,6 +578,7 @@ main() {
     status)    cmd_status;;
     network)   cmd_network;;
     mcp-url)   cmd_mcp_url;;
+    token)     cmd_token;;
     uninstall) cmd_uninstall;;
     ""|help|-h|--help) usage;;
     *) die "unknown command: $cmd" "run '$PROG --help' for the command list";;
