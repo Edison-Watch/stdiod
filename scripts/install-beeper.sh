@@ -429,16 +429,18 @@ wire_tunnel() {
     ok "tunnel child '$SERVER_NAME' already registered on this device"
     return 0
   fi
+  # Capture with '&& rc=0 || rc=$?' so a non-zero add does not trip set -e
+  # (a bare 'out=$(cmd)' assignment failing would abort the script silently).
   local out rc
   out="$(edison-stdiod server add "$SERVER_NAME" --display-name "Beeper" \
-        --command npx --arg=-y --arg="$MCP_PKG" 2>&1)"; rc=$?
+        --command npx --arg=-y --arg="$MCP_PKG" 2>&1)" && rc=0 || rc=$?
   # A name is unique per org: a 409 means it exists under another device (a
   # stale registration). Remove it (org-level, admin-only) and re-add here.
   if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qiE 'already exists|CONFLICT|409'; then
     warn "'$SERVER_NAME' already exists in this org (stale/other device); re-registering it here"
     edison-stdiod server remove "$SERVER_NAME" >/dev/null 2>&1 || true
     out="$(edison-stdiod server add "$SERVER_NAME" --display-name "Beeper" \
-          --command npx --arg=-y --arg="$MCP_PKG" 2>&1)"; rc=$?
+          --command npx --arg=-y --arg="$MCP_PKG" 2>&1)" && rc=0 || rc=$?
   fi
   if [ "$rc" -ne 0 ]; then
     printf '%s\n' "$out" >&2
