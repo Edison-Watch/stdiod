@@ -246,19 +246,40 @@ mask_token() {
 # Keychain, then keep the first that authenticates against the local OAuth
 # userinfo endpoint. Prints the working token to stdout; diagnostics to stderr.
 discover_beeper_token() {
-  local api="${BEEPER_API_URL:-http://127.0.0.1:23373}"
-  local uinfo
-  uinfo="$(curl -s -m 5 "$api/.well-known/oauth-authorization-server" 2>/dev/null \
-           | grep -oE '"userinfo_endpoint"[[:space:]]*:[[:space:]]*"[^"]+"' \
-           | grep -oE 'https?://[^"]+' | head -1)"
-  [ -z "$uinfo" ] && uinfo="$api/oauth/userinfo"
-
-  local cp cands=""
-  cp="$(beeper config path 2>/dev/null || true)"
-  if [ -n "$cp" ] && [ -e "$cp" ]; then
-    cands="$(find "$cp" -type f -exec cat {} + 2>/dev/null \
-             | grep -oE '[A-Za-z0-9._-]{24,}' | sort -u | head -n 60 || true)"
+  # Find a reachable Desktop API base URL. Beeper may bind IPv6-only, so probe
+  # [::1] and localhost as well as 127.0.0.1 (honor BEEPER_API_URL if set).
+  local base="" uinfo="" meta h
+  local hosts="127.0.0.1 [::1] localhost"
+  [ -n "${BEEPER_API_URL:-}" ] && hosts="$BEEPER_API_URL $hosts"
+  for h in $hosts; do
+    case "$h" in http*) meta_url="$h/.well-known/oauth-authorization-server"; base="$h";;
+                 *)     meta_url="http://$h:23373/.well-known/oauth-authorization-server"; base="http://$h:23373";; esac
+    meta="$(curl -s -m 4 "$meta_url" 2>/dev/null || true)"
+    if [ -n "$meta" ]; then
+      uinfo="$(printf '%s' "$meta" | grep -oE '"userinfo_endpoint"[[:space:]]*:[[:space:]]*"[^"]+"' | grep -oE 'https?://[^"]+' | head -1)"
+      break
+    fi
+    base=""
+  done
+  if [ -z "$base" ]; then
+    warn "the Beeper Desktop API did not answer on 127.0.0.1/[::1]/localhost:23373"
+    warn "it must be running and enabled for the tunnel child to reach it"
+    return 1
   fi
+  [ -z "$uinfo" ] && uinfo="$base/oauth/userinfo"
+
+  # Candidate token strings from the CLI config dir (scan the whole directory,
+  # since 'beeper config path' may point at a single file) plus the Keychain.
+  local cp dirs="$HOME/.beeper" cands="" d
+  cp="$(beeper config path 2>/dev/null || true)"
+  if [ -n "$cp" ]; then
+    if [ -d "$cp" ]; then dirs="$cp $dirs"; else dirs="$(dirname "$cp") $dirs"; fi
+  fi
+  for d in $dirs; do
+    [ -d "$d" ] || continue
+    cands="$cands
+$(find "$d" -type f -exec cat {} + 2>/dev/null | grep -oE '[A-Za-z0-9._-]{24,}' | sort -u | head -n 80)"
+  done
   if command -v security >/dev/null 2>&1; then
     local svc kc
     for svc in beeper Beeper beeper-cli com.beeper.cli "Beeper Desktop" "Beeper Desktop API"; do
@@ -274,7 +295,7 @@ $kc"
     code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H "Authorization: Bearer $tok" "$uinfo" 2>/dev/null || true)"
     if [ "$code" = "200" ]; then printf '%s' "$tok"; return 0; fi
   done <<EOF
-$cands
+$(printf '%s' "$cands" | sort -u)
 EOF
   return 1
 }
