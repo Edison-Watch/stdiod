@@ -409,10 +409,12 @@ wire_tunnel() {
   if [ "$DRY_RUN" -eq 0 ] && edison-stdiod server list --json 2>/dev/null | grep -q "\"$SERVER_NAME\""; then
     ok "tunnel child '$SERVER_NAME' already registered"
   else
+    # Use the --arg=VALUE form: clap rejects a hyphen-leading value in the
+    # space form ('--arg -y' is read as an unknown flag), so '--arg=-y'.
     if ! run edison-stdiod server add "$SERVER_NAME" \
         --display-name "Beeper" \
         --command npx \
-        --arg -y --arg "$MCP_PKG"; then
+        --arg=-y --arg="$MCP_PKG"; then
       die "edison-stdiod server add failed for '$SERVER_NAME'" \
         "confirm the daemon is logged in and the backend is reachable, then re-run: $PROG install"
     fi
@@ -435,14 +437,18 @@ bind_beeper_token() {
   local path="${EW_SERVER_ENV_PATH:-/api/v1/servers/${SERVER_NAME}/env}"
   local url="${EW_BACKEND}${path}"
   if [ "$DRY_RUN" -eq 1 ]; then
-    run curl -X POST "$url" "(set BEEPER_ACCESS_TOKEN, respawns child)"
+    run curl -X POST "$url" "(set BEEPER_ACCESS_TOKEN + base URL, respawns child)"
     return 0
   fi
+  # Also pass the discovered base URL: the server may bind a non-default port
+  # (e.g. 23374) while the proxy defaults to 23373. Send both common env names.
+  local api_base; api_base="$(beeper_api_base 2>/dev/null || true)"
+  [ -z "$api_base" ] && api_base="http://127.0.0.1:23373"
   local code
   code="$(curl -s -o /dev/null -w '%{http_code}' -m 30 --connect-timeout 5 -X POST "$url" \
     -H "Authorization: Bearer ${EW_API_KEY}" \
     -H "Content-Type: application/json" \
-    --data "{\"env\":{\"BEEPER_ACCESS_TOKEN\":\"${BEEPER_ACCESS_TOKEN}\"}}" 2>/dev/null || true)"
+    --data "{\"env\":{\"BEEPER_ACCESS_TOKEN\":\"${BEEPER_ACCESS_TOKEN}\",\"BEEPER_API_URL\":\"${api_base}\",\"BEEPER_DESKTOP_BASE_URL\":\"${api_base}\"}}" 2>/dev/null || true)"
   [ -z "$code" ] && code="000"
   case "$code" in
     2*)      ok "bound to child '$SERVER_NAME' and respawned"; return 0;;
