@@ -417,22 +417,35 @@ wire_tunnel() {
       "macOS needs no privileges; Linux needs a logged-in systemd --user session. Fix that, then re-run: $PROG install"
   fi
 
-  # Idempotent: only add the child if it is not already registered. The live
-  # probe is skipped under --dry-run (nothing is registered to probe).
-  if [ "$DRY_RUN" -eq 0 ] && edison-stdiod server list --json 2>/dev/null | grep -q "\"$SERVER_NAME\""; then
-    ok "tunnel child '$SERVER_NAME' already registered"
-  else
-    # Use the --arg=VALUE form: clap rejects a hyphen-leading value in the
-    # space form ('--arg -y' is read as an unknown flag), so '--arg=-y'.
-    if ! run edison-stdiod server add "$SERVER_NAME" \
-        --display-name "Beeper" \
-        --command npx \
-        --arg=-y --arg="$MCP_PKG"; then
-      die "edison-stdiod server add failed for '$SERVER_NAME'" \
-        "confirm the daemon is logged in and the backend is reachable, then re-run: $PROG install"
-    fi
-    ok "tunnel child '$SERVER_NAME' registered"
+  # Use the --arg=VALUE form: clap rejects a hyphen-leading value in the space
+  # form ('--arg -y' is read as an unknown flag), so '--arg=-y'.
+  if [ "$DRY_RUN" -eq 1 ]; then
+    run edison-stdiod server add "$SERVER_NAME" --display-name "Beeper" \
+      --command npx --arg=-y --arg="$MCP_PKG"
+    return 0
   fi
+  # Idempotent on this device.
+  if edison-stdiod server list --json 2>/dev/null | grep -q "\"$SERVER_NAME\""; then
+    ok "tunnel child '$SERVER_NAME' already registered on this device"
+    return 0
+  fi
+  local out rc
+  out="$(edison-stdiod server add "$SERVER_NAME" --display-name "Beeper" \
+        --command npx --arg=-y --arg="$MCP_PKG" 2>&1)"; rc=$?
+  # A name is unique per org: a 409 means it exists under another device (a
+  # stale registration). Remove it (org-level, admin-only) and re-add here.
+  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qiE 'already exists|CONFLICT|409'; then
+    warn "'$SERVER_NAME' already exists in this org (stale/other device); re-registering it here"
+    edison-stdiod server remove "$SERVER_NAME" >/dev/null 2>&1 || true
+    out="$(edison-stdiod server add "$SERVER_NAME" --display-name "Beeper" \
+          --command npx --arg=-y --arg="$MCP_PKG" 2>&1)"; rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$out" >&2
+    die "edison-stdiod server add failed for '$SERVER_NAME'" \
+      "if it still conflicts, your key may lack admin (remove needs it); pass --server-name <other> or delete '$SERVER_NAME' in the dashboard, then re-run: $PROG install"
+  fi
+  ok "tunnel child '$SERVER_NAME' registered"
 }
 
 # ---------------------------------------------------------------------------
