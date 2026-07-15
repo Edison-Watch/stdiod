@@ -271,30 +271,38 @@ wire_tunnel() {
 # ---------------------------------------------------------------------------
 # Step 5: bind the Beeper token to the child
 # ---------------------------------------------------------------------------
-# `edison-stdiod server add` carries no env; the daemon receives per-child env
-# from the backend (see stdiod env_store). We push BEEPER_ACCESS_TOKEN to the
-# backend so it is stored as an Edison secret and injected at spawn. If the
-# backend route is unavailable, we do not fail the whole install: the tunnel is
-# up and the child is registered; only the token binding is pending, and we
-# print the manual step.
+# `edison-stdiod server add` carries no env, so we push BEEPER_ACCESS_TOKEN
+# separately. The route is the backend's confirmed stdio_tunnel env endpoint,
+# `POST /api/v1/servers/{name}/env` (schema UpdateServerEnvRequest): the value
+# is staged in the device's on-device env_store and the child is respawned with
+# it. The endpoint is admin-only, so --ew-api-key must belong to an org admin.
+# A failure here is non-fatal: the tunnel and child are already set up, so we
+# print the manual step and let the rest of the install finish.
 bind_beeper_token() {
   local path="${EW_SERVER_ENV_PATH:-/api/v1/servers/${SERVER_NAME}/env}"
   local url="${EW_BACKEND}${path}"
   if [ "$DRY_RUN" -eq 1 ]; then
-    printf 'would run: curl -sf -X POST %s (set BEEPER_ACCESS_TOKEN)\n' "$url" >&2
+    printf 'would run: curl -X POST %s (set BEEPER_ACCESS_TOKEN, respawns child)\n' "$url" >&2
     return 0
   fi
   local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' -m 15 --connect-timeout 5 -X POST "$url" \
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 30 --connect-timeout 5 -X POST "$url" \
     -H "Authorization: Bearer ${EW_API_KEY}" \
     -H "Content-Type: application/json" \
     --data "{\"env\":{\"BEEPER_ACCESS_TOKEN\":\"${BEEPER_ACCESS_TOKEN}\"}}" 2>/dev/null || true)"
   [ -z "$code" ] && code="000"
   case "$code" in
-    2*) log "beeper token: bound to child '$SERVER_NAME' as an Edison secret";;
-    *)  log "warning: could not bind the Beeper token via ${url} (http ${code})"
-        log "  the tunnel and child are set up; bind the token manually in the Edison"
-        log "  dashboard under Servers > ${SERVER_NAME} > environment, key BEEPER_ACCESS_TOKEN";;
+    2*)      log "beeper token: bound to child '$SERVER_NAME' and respawned";;
+    401|403) log "warning: not authorized to bind the token (http ${code})"
+             log "  the ${url##*/api/} endpoint is admin-only; --ew-api-key must belong to an org admin";;
+    000)     log "warning: could not reach ${url} (network, or daemon not connected yet)"
+             log "  confirm 'edison-stdiod status' shows connected, then re-run: $PROG install";;
+    *)       log "warning: token bind returned http ${code} for ${url}";;
+  esac
+  case "$code" in
+    2*) ;;
+    *)  log "  manual fallback: set BEEPER_ACCESS_TOKEN for server '${SERVER_NAME}' in the"
+        log "  Edison dashboard under Servers > ${SERVER_NAME} > environment";;
   esac
 }
 
