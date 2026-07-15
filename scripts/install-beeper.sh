@@ -444,6 +444,10 @@ wire_tunnel() {
   fi
   if [ "$rc" -ne 0 ]; then
     printf '%s\n' "$out" >&2
+    if printf '%s' "$out" | grep -qi 'STEP_UP_REQUIRED\|fresh re-login\|re-authenticate'; then
+      die "adding a local server is gated behind interactive step-up re-auth (by design)" \
+        "add '$SERVER_NAME' once in the ${EW_BACKEND} dashboard (targets this device, clears the 5-min re-auth modal), then re-run: $PROG install. On non-release backends an admin can also set STEP_UP_BYPASS_EMAIL_DOMAINS."
+    fi
     die "edison-stdiod server add failed for '$SERVER_NAME'" \
       "if it still conflicts, your key may lack admin (remove needs it); pass --server-name <other> or delete '$SERVER_NAME' in the dashboard, then re-run: $PROG install"
   fi
