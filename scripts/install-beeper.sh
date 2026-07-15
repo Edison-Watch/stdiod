@@ -52,26 +52,49 @@ INTERACTIVE=0
 JSON=0
 INSTALL_DEPS=0
 VERBOSE=0
+NO_COLOR_FLAG=0
 
 PROG="$(basename "$0")"
 
 # ---------------------------------------------------------------------------
-# Output helpers (data to stdout, diagnostics to stderr)
+# Colors (auto-off when stderr is not a TTY, when NO_COLOR is set, or with
+# --no-color, so piped and agent output stays a clean, parseable stream)
+# ---------------------------------------------------------------------------
+C_RESET=; C_BOLD=; C_DIM=; C_RED=; C_GREEN=; C_YELLOW=; C_BLUE=; C_CYAN=; C_GREY=
+init_colors() {
+  if [ "$NO_COLOR_FLAG" -eq 1 ] || [ -n "${NO_COLOR:-}" ] || [ ! -t 2 ] || [ "${TERM:-}" = "dumb" ]; then
+    return 0
+  fi
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+  C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'
+  C_BLUE=$'\033[34m'; C_CYAN=$'\033[36m'; C_GREY=$'\033[90m'
+}
+
+# ---------------------------------------------------------------------------
+# Output helpers (data to stdout, diagnostics + progress to stderr)
 # ---------------------------------------------------------------------------
 log()  { printf '%s\n' "$*" >&2; }
-vlog() { [ "$VERBOSE" -eq 1 ] && printf 'debug: %s\n' "$*" >&2 || true; }
-die()  { printf 'error: %s\n' "$1" >&2; [ -n "${2:-}" ] && printf '  fix: %s\n' "$2" >&2; exit "${3:-1}"; }
+step() { printf '%s%s>>%s %s%s\n' "$C_BOLD" "$C_BLUE" "$C_RESET" "$C_BOLD" "$*$C_RESET" >&2; }
+ok()   { printf '   %s+%s %s\n' "$C_GREEN" "$C_RESET" "$*" >&2; }
+info() { printf '   %s-%s %s%s%s\n' "$C_GREY" "$C_RESET" "$C_DIM" "$*" "$C_RESET" >&2; }
+warn() { printf '   %s!%s %s%s%s\n' "$C_YELLOW" "$C_RESET" "$C_YELLOW" "$*" "$C_RESET" >&2; }
+vlog() { [ "$VERBOSE" -eq 1 ] && printf '   %sdebug: %s%s\n' "$C_GREY" "$*" "$C_RESET" >&2 || true; }
+die()  {
+  printf '%s%sx error:%s %s\n' "$C_BOLD" "$C_RED" "$C_RESET" "$1" >&2
+  [ -n "${2:-}" ] && printf '     %sfix:%s %s\n' "$C_CYAN" "$C_RESET" "$2" >&2
+  exit "${3:-1}"
+}
 
-# run CMD... - echoes under --dry-run instead of executing.
+# run CMD... - previews under --dry-run instead of executing.
 run() {
-  if [ "$DRY_RUN" -eq 1 ]; then printf 'would run: %s\n' "$*" >&2; return 0; fi
+  if [ "$DRY_RUN" -eq 1 ]; then printf '   %swould run:%s %s%s%s\n' "$C_CYAN" "$C_RESET" "$C_DIM" "$*" "$C_RESET" >&2; return 0; fi
   vlog "run: $*"
   "$@"
 }
 
 # capture CMD... - like run but returns stdout; suppressed under --dry-run.
 capture() {
-  if [ "$DRY_RUN" -eq 1 ]; then printf 'would run: %s\n' "$*" >&2; return 0; fi
+  if [ "$DRY_RUN" -eq 1 ]; then printf '   %swould run:%s %s%s%s\n' "$C_CYAN" "$C_RESET" "$C_DIM" "$*" "$C_RESET" >&2; return 0; fi
   "$@"
 }
 
@@ -92,7 +115,7 @@ confirm() {
 require_supported_platform() {
   case "$(uname -s)" in
     Darwin) ;;
-    Linux)  log "warning: Linux support in edison-stdiod is experimental (needs a systemd --user session); macOS is the supported target";;
+    Linux)  warn "Linux support in edison-stdiod is experimental (needs a systemd --user session); macOS is the supported target";;
     *)      die "unsupported platform: $(uname -s)" "macOS is supported; Linux is experimental; see stdiod/README.md";;
   esac
 }
@@ -113,6 +136,7 @@ parse_flags() {
       -y|--yes)       ASSUME_YES=1; shift;;
       --interactive)  INTERACTIVE=1; shift;;
       --install-deps) INSTALL_DEPS=1; shift;;
+      --no-color)     NO_COLOR_FLAG=1; shift;;
       --json)         JSON=1; shift;;
       --verbose)      VERBOSE=1; shift;;
       -h|--help)      return 10;;
@@ -141,7 +165,7 @@ ensure_tool() {
   command -v "$cmd" >/dev/null 2>&1 && return 0
 
   if [ "$DRY_RUN" -eq 1 ]; then
-    log "dep '$cmd' missing; would install via: $*"
+    info "dep '$cmd' missing; would install via: $*"
     return 0
   fi
 
@@ -158,13 +182,14 @@ ensure_tool() {
   # Validate the installer itself is available before invoking it.
   command -v "$1" >/dev/null 2>&1 || die "cannot auto-install '$cmd': '$1' not found" "$fix"
 
-  log "installing '$cmd' via: $*"
+  step "installing '$cmd' via: $*"
   "$@" || die "auto-install of '$cmd' failed" "$fix"
   command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' still not on PATH after install" "$fix"
-  log "installed '$cmd'"
+  ok "installed '$cmd'"
 }
 
 ensure_deps() {
+  step "Checking prerequisites"
   require_supported_platform
   local stdiod_src; stdiod_src="$(dirname "$0")/../crates/edison-stdiod"
   ensure_tool npx \
@@ -178,9 +203,9 @@ ensure_deps() {
     cargo install --path "$stdiod_src"
 
   if [ "$DRY_RUN" -eq 1 ]; then
-    log "deps: preview only (nothing was installed)"
+    info "deps: preview only (nothing was installed)"
   else
-    log "deps ok: npx, beeper, edison-stdiod all present"
+    ok "npx, beeper, edison-stdiod all present"
   fi
 }
 
@@ -188,12 +213,13 @@ ensure_deps() {
 # Step 2: headless Beeper Server
 # ---------------------------------------------------------------------------
 ensure_beeper_server() {
+  step "Beeper Server (headless)"
   # `beeper status` exits 0 when a server target is adopted and reachable.
-  if beeper status >/dev/null 2>&1; then
-    log "beeper server: already running"
+  if [ "$DRY_RUN" -eq 0 ] && beeper status >/dev/null 2>&1; then
+    ok "already running"
     return 0
   fi
-  log "beeper server: installing headless server (a browser opens once to authorize your Beeper account)"
+  info "installing headless server (a browser opens once to authorize your Beeper account)"
   run beeper setup --server --install
 }
 
@@ -202,12 +228,13 @@ ensure_beeper_server() {
 # ---------------------------------------------------------------------------
 # Precedence: explicit token > CLI-issued token > fail with the manual step.
 ensure_beeper_token() {
+  step "Beeper access token"
   if [ -n "$BEEPER_ACCESS_TOKEN" ]; then
-    log "beeper token: using supplied token"
+    ok "using supplied token"
     return 0
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
-    log "beeper token: would mint via CLI (or require --beeper-token)"
+    info "would mint via CLI (or require --beeper-token)"
     BEEPER_ACCESS_TOKEN="dry-run-placeholder-token"
     return 0
   fi
@@ -219,7 +246,7 @@ ensure_beeper_token() {
         | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1 || true)"
   if [ -n "$tok" ]; then
     BEEPER_ACCESS_TOKEN="$tok"
-    log "beeper token: minted via CLI"
+    ok "minted via CLI"
     return 0
   fi
   die "could not obtain a Beeper access token automatically" \
@@ -231,7 +258,7 @@ ensure_beeper_token() {
 # ---------------------------------------------------------------------------
 ensure_ew_api_key() {
   if [ -n "$EW_API_KEY" ]; then
-    log "edison account: using supplied API key"
+    ok "edison account: using supplied API key"
     return 0
   fi
   die "no Edison Watch API key provided" \
@@ -242,6 +269,7 @@ ensure_ew_api_key() {
 # Step 4b: supervise the tunnel daemon and register the Beeper child
 # ---------------------------------------------------------------------------
 wire_tunnel() {
+  step "Edison tunnel (stdiod daemon)"
   # Each step is wrapped so a failure yields a clean, actionable message
   # instead of a raw daemon backtrace plus a set -e abort mid-flow.
   if ! run edison-stdiod login --backend "$EW_BACKEND" --api-key "$EW_API_KEY" --device-label "$DEVICE_LABEL"; then
@@ -255,7 +283,7 @@ wire_tunnel() {
   # Idempotent: only add the child if it is not already registered. The live
   # probe is skipped under --dry-run (nothing is registered to probe).
   if [ "$DRY_RUN" -eq 0 ] && edison-stdiod server list --json 2>/dev/null | grep -q "\"$SERVER_NAME\""; then
-    log "tunnel child '$SERVER_NAME': already registered"
+    ok "tunnel child '$SERVER_NAME' already registered"
   else
     if ! run edison-stdiod server add "$SERVER_NAME" \
         --display-name "Beeper" \
@@ -264,7 +292,7 @@ wire_tunnel() {
       die "edison-stdiod server add failed for '$SERVER_NAME'" \
         "confirm the daemon is logged in and the backend is reachable, then re-run: $PROG install"
     fi
-    log "tunnel child '$SERVER_NAME': registered"
+    ok "tunnel child '$SERVER_NAME' registered"
   fi
 }
 
@@ -279,10 +307,11 @@ wire_tunnel() {
 # A failure here is non-fatal: the tunnel and child are already set up, so we
 # print the manual step and let the rest of the install finish.
 bind_beeper_token() {
+  step "Binding Beeper token to the tunnel child"
   local path="${EW_SERVER_ENV_PATH:-/api/v1/servers/${SERVER_NAME}/env}"
   local url="${EW_BACKEND}${path}"
   if [ "$DRY_RUN" -eq 1 ]; then
-    printf 'would run: curl -X POST %s (set BEEPER_ACCESS_TOKEN, respawns child)\n' "$url" >&2
+    run curl -X POST "$url" "(set BEEPER_ACCESS_TOKEN, respawns child)"
     return 0
   fi
   local code
@@ -292,18 +321,14 @@ bind_beeper_token() {
     --data "{\"env\":{\"BEEPER_ACCESS_TOKEN\":\"${BEEPER_ACCESS_TOKEN}\"}}" 2>/dev/null || true)"
   [ -z "$code" ] && code="000"
   case "$code" in
-    2*)      log "beeper token: bound to child '$SERVER_NAME' and respawned";;
-    401|403) log "warning: not authorized to bind the token (http ${code})"
-             log "  the ${url##*/api/} endpoint is admin-only; --ew-api-key must belong to an org admin";;
-    000)     log "warning: could not reach ${url} (network, or daemon not connected yet)"
-             log "  confirm 'edison-stdiod status' shows connected, then re-run: $PROG install";;
-    *)       log "warning: token bind returned http ${code} for ${url}";;
+    2*)      ok "bound to child '$SERVER_NAME' and respawned"; return 0;;
+    401|403) warn "not authorized to bind the token (http ${code})"
+             warn "the env endpoint is admin-only; --ew-api-key must belong to an org admin";;
+    000)     warn "could not reach ${url} (network, or daemon not connected yet)"
+             warn "confirm 'edison-stdiod status' shows connected, then re-run: $PROG install";;
+    *)       warn "token bind returned http ${code} for ${url}";;
   esac
-  case "$code" in
-    2*) ;;
-    *)  log "  manual fallback: set BEEPER_ACCESS_TOKEN for server '${SERVER_NAME}' in the"
-        log "  Edison dashboard under Servers > ${SERVER_NAME} > environment";;
-  esac
+  warn "manual fallback: set BEEPER_ACCESS_TOKEN for server '${SERVER_NAME}' in the Edison dashboard under Servers > ${SERVER_NAME} > environment"
 }
 
 # ---------------------------------------------------------------------------
@@ -311,12 +336,13 @@ bind_beeper_token() {
 # ---------------------------------------------------------------------------
 add_networks() {
   [ -z "$NETWORKS" ] && return 0
+  step "Linking chat networks"
   # Split on commas without leaking IFS into run()'s "$*" logging.
   local net nets
   nets="$(printf '%s' "$NETWORKS" | tr ',' ' ')"
   for net in $nets; do
     [ -z "$net" ] && continue
-    log "network: adding '$net' (follow the QR / code prompt in this terminal)"
+    info "adding '$net' (follow the QR / code prompt in this terminal)"
     run beeper accounts add "$net"
   done
 }
@@ -330,14 +356,18 @@ print_mcp_url() {
   if [ "$JSON" -eq 1 ]; then
     printf '{"mcp_url":"%s","auth_header":"Authorization: Bearer %s","server":"%s","device_label":"%s"}\n' \
       "$mcp_url" "$EW_API_KEY" "$SERVER_NAME" "$DEVICE_LABEL"
-  else
-    printf 'mcp_url: %s\n' "$mcp_url"
-    printf 'auth:    Authorization: Bearer %s\n' "$masked"
-    printf 'server:  %s (prefix: %s_*)\n' "$SERVER_NAME" "$SERVER_NAME"
-    printf 'device:  %s\n' "$DEVICE_LABEL"
-    # Ready-to-run snippet uses the real key so it can be pasted as-is.
-    printf '\nclaude mcp add edison %s -t http -H "Authorization: Bearer %s" -s user\n' "$mcp_url" "$EW_API_KEY"
+    return 0
   fi
+  # stdout-gated colors so redirected/piped output stays clean and parseable.
+  local b=$C_BOLD g=$C_GREEN d=$C_DIM r=$C_RESET
+  [ -t 1 ] || { b=; g=; d=; r=; }
+  printf '%smcp_url:%s %s%s%s\n' "$b" "$r" "$g" "$mcp_url" "$r"
+  printf '%sauth:%s    Authorization: Bearer %s\n' "$b" "$r" "$masked"
+  printf '%sserver:%s  %s (prefix: %s_*)\n' "$b" "$r" "$SERVER_NAME" "$SERVER_NAME"
+  printf '%sdevice:%s  %s\n' "$b" "$r" "$DEVICE_LABEL"
+  # Ready-to-run snippet uses the real key so it can be pasted as-is (uncolored).
+  printf '\n%s# add to Claude Code:%s\n' "$d" "$r"
+  printf 'claude mcp add edison %s -t http -H "Authorization: Bearer %s" -s user\n' "$mcp_url" "$EW_API_KEY"
 }
 
 # ===========================================================================
@@ -351,19 +381,20 @@ cmd_install() {
   wire_tunnel
   bind_beeper_token
   add_networks
-  log "install complete."
+  printf '\n%s%s== install complete ==%s\n' "$C_BOLD" "$C_GREEN" "$C_RESET" >&2
   print_mcp_url
 }
 
 cmd_doctor() {
-  local ok=1
+  step "Doctor"
+  local allgood=1
   for c in npx beeper edison-stdiod; do
-    if command -v "$c" >/dev/null 2>&1; then log "ok   $c"; else log "MISS $c"; ok=0; fi
+    if command -v "$c" >/dev/null 2>&1; then ok "$c"; else warn "$c missing"; allgood=0; fi
   done
-  if beeper status >/dev/null 2>&1; then log "ok   beeper server reachable"; else log "MISS beeper server"; ok=0; fi
+  if beeper status >/dev/null 2>&1; then ok "beeper server reachable"; else warn "beeper server not reachable"; allgood=0; fi
   if command -v edison-stdiod >/dev/null 2>&1 && edison-stdiod status >/dev/null 2>&1; then
-    log "ok   stdiod daemon"; else log "MISS stdiod daemon (run: $PROG install)"; ok=0; fi
-  [ "$ok" -eq 1 ] && log "doctor: all good" || die "doctor: some checks failed (see above)" "$PROG install --install-deps"
+    ok "stdiod daemon connected"; else warn "stdiod daemon not running (run: $PROG install)"; allgood=0; fi
+  [ "$allgood" -eq 1 ] && ok "all good" || die "some checks failed (see above)" "$PROG install --install-deps"
 }
 
 cmd_status() {
@@ -423,6 +454,7 @@ Common flags (also settable as UPPER_SNAKE env vars):
   --yes                Skip confirmations (agents pass this)
   --interactive        Allow interactive prompts as a fallback
   --json               Machine-readable output where supported
+  --no-color           Disable colored output (also honors NO_COLOR)
   --verbose            Debug logging on stderr
   -h, --help           This help
 
@@ -468,7 +500,8 @@ main() {
   if [ "$cmd" = "network" ]; then
     ARGS+=("${1:-}"); shift || true
   fi
-  parse_flags "$@" || { subcmd_help "$cmd"; exit 0; }
+  parse_flags "$@" || { init_colors; subcmd_help "$cmd"; exit 0; }
+  init_colors
 
   case "$cmd" in
     install)   cmd_install;;
