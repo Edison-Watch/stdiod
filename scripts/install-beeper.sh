@@ -35,6 +35,11 @@ set -euo pipefail
 export RUST_BACKTRACE="${RUST_BACKTRACE:-0}"
 export RUST_LIB_BACKTRACE="${RUST_LIB_BACKTRACE:-0}"
 
+# Keep `brew install` from dumping its auto-update "New Formulae" wall and env
+# hints on every run. Respected only by Homebrew; harmless elsewhere.
+export HOMEBREW_NO_AUTO_UPDATE="${HOMEBREW_NO_AUTO_UPDATE:-1}"
+export HOMEBREW_NO_ENV_HINTS="${HOMEBREW_NO_ENV_HINTS:-1}"
+
 # ---------------------------------------------------------------------------
 # Defaults (every one overridable by flag or environment variable)
 # ---------------------------------------------------------------------------
@@ -194,10 +199,10 @@ ensure_deps() {
   local stdiod_src; stdiod_src="$(dirname "$0")/../crates/edison-stdiod"
   ensure_tool npx \
     "install Node (brew install node) or re-run with --install-deps" \
-    brew install node
+    brew install --quiet node
   ensure_tool beeper \
     "run: brew install beeper/tap/cli   (or re-run with --install-deps)" \
-    brew install beeper/tap/cli
+    brew install --quiet beeper/tap/cli
   ensure_tool edison-stdiod \
     "run: cargo install --path crates/edison-stdiod   (or re-run with --install-deps)" \
     cargo install --path "$stdiod_src"
@@ -234,23 +239,20 @@ ensure_beeper_token() {
     return 0
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
-    info "would mint via CLI (or require --beeper-token)"
+    info "would require --beeper-token (Beeper has no headless token mint)"
     BEEPER_ACCESS_TOKEN="dry-run-placeholder-token"
     return 0
   fi
-  # The CLI can mint a Desktop API token for approved connections without a
-  # browser once the server is authorized. If your CLI version exposes a
-  # different verb, pass the token in via --beeper-token / BEEPER_ACCESS_TOKEN.
-  local tok=""
-  tok="$(capture beeper api post /v0/access-tokens --json 2>/dev/null \
-        | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1 || true)"
-  if [ -n "$tok" ]; then
-    BEEPER_ACCESS_TOKEN="$tok"
-    ok "minted via CLI"
-    return 0
-  fi
-  die "could not obtain a Beeper access token automatically" \
-    "create one in Beeper > Settings > Developers > Approved connections, then re-run with --beeper-token <TOKEN>"
+  # Beeper exposes no headless command to mint a Desktop API token: tokens are
+  # created in the app UI (Approved connections). This is a one-time manual
+  # step; after it, everything else here is automated and idempotent.
+  warn "Beeper cannot mint a Desktop API token headlessly; create one once, then re-run"
+  warn "in Beeper Desktop: Settings > Developers > Beeper Desktop API (enable),"
+  warn "then Approved connections > +  to copy a token"
+  warn "re-run: $PROG install --ew-api-key <KEY> --beeper-token <TOKEN> --networks ${NETWORKS:-whatsapp}"
+  warn "(deps and the Beeper Server are already set up, so the re-run is fast)"
+  die "no Beeper access token provided" \
+    "pass --beeper-token <TOKEN> (or set BEEPER_ACCESS_TOKEN)"
 }
 
 # ---------------------------------------------------------------------------
