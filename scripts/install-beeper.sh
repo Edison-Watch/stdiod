@@ -217,15 +217,47 @@ ensure_deps() {
 # ---------------------------------------------------------------------------
 # Step 2: headless Beeper Server
 # ---------------------------------------------------------------------------
+# Echo the first reachable Beeper Desktop API base URL, or nothing (exit 1).
+# The CLI scans ports 23373-23378 on 127.0.0.1/localhost; the server may also
+# bind IPv6 ([::1]). BEEPER_API_URL overrides the probe.
+beeper_api_base() {
+  local wk="/.well-known/oauth-authorization-server" code h p url
+  if [ -n "${BEEPER_API_URL:-}" ]; then
+    code="$(curl -s -m 3 -o /dev/null -w '%{http_code}' "${BEEPER_API_URL}${wk}" 2>/dev/null || true)"
+    [ -n "$code" ] && [ "$code" != "000" ] && { printf '%s' "$BEEPER_API_URL"; return 0; }
+  fi
+  for h in 127.0.0.1 localhost "[::1]"; do
+    for p in 23373 23374 23375 23376 23377 23378; do
+      url="http://$h:$p"
+      code="$(curl -s -m 2 -o /dev/null -w '%{http_code}' "${url}${wk}" 2>/dev/null || true)"
+      [ -n "$code" ] && [ "$code" != "000" ] && { printf '%s' "$url"; return 0; }
+    done
+  done
+  return 1
+}
+
 ensure_beeper_server() {
   step "Beeper Server (headless)"
-  # `beeper status` exits 0 when a server target is adopted and reachable.
-  if [ "$DRY_RUN" -eq 0 ] && beeper status >/dev/null 2>&1; then
-    ok "already running"
+  local base
+  if [ "$DRY_RUN" -eq 1 ]; then
+    info "would ensure the headless Beeper Server is running (browser auth on first setup)"
+    run beeper setup --server --install
     return 0
   fi
-  info "installing headless server (a browser opens once to authorize your Beeper account)"
+  # Probe the real Desktop API, not `beeper status` (which exits 0 even with no
+  # server configured, so it used to skip setup and leave nothing listening).
+  if base="$(beeper_api_base)"; then
+    ok "Desktop API reachable at $base"
+    return 0
+  fi
+  info "installing/starting the headless server (a browser opens once to authorize your Beeper account)"
   run beeper setup --server --install
+  if base="$(beeper_api_base)"; then
+    ok "Desktop API reachable at $base"
+  else
+    die "the Beeper Desktop API is not reachable on 23373-23378 after setup" \
+      "finish the browser authorization opened by 'beeper setup --server --install', then re-run: $PROG install"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -246,26 +278,15 @@ mask_token() {
 # Keychain, then keep the first that authenticates against the local OAuth
 # userinfo endpoint. Prints the working token to stdout; diagnostics to stderr.
 discover_beeper_token() {
-  # Find a reachable Desktop API base URL. Beeper may bind IPv6-only, so probe
-  # [::1] and localhost as well as 127.0.0.1 (honor BEEPER_API_URL if set).
-  local base="" uinfo="" meta h
-  local hosts="127.0.0.1 [::1] localhost"
-  [ -n "${BEEPER_API_URL:-}" ] && hosts="$BEEPER_API_URL $hosts"
-  for h in $hosts; do
-    case "$h" in http*) meta_url="$h/.well-known/oauth-authorization-server"; base="$h";;
-                 *)     meta_url="http://$h:23373/.well-known/oauth-authorization-server"; base="http://$h:23373";; esac
-    meta="$(curl -s -m 4 "$meta_url" 2>/dev/null || true)"
-    if [ -n "$meta" ]; then
-      uinfo="$(printf '%s' "$meta" | grep -oE '"userinfo_endpoint"[[:space:]]*:[[:space:]]*"[^"]+"' | grep -oE 'https?://[^"]+' | head -1)"
-      break
-    fi
-    base=""
-  done
-  if [ -z "$base" ]; then
-    warn "the Beeper Desktop API did not answer on 127.0.0.1/[::1]/localhost:23373"
-    warn "it must be running and enabled for the tunnel child to reach it"
+  local base uinfo=""
+  if ! base="$(beeper_api_base)"; then
+    warn "the Beeper Desktop API is not reachable on 23373-23378"
+    warn "run 'beeper setup --server --install' and finish the browser authorization first"
     return 1
   fi
+  uinfo="$(curl -s -m 4 "$base/.well-known/oauth-authorization-server" 2>/dev/null \
+           | grep -oE '"userinfo_endpoint"[[:space:]]*:[[:space:]]*"[^"]+"' \
+           | grep -oE 'https?://[^"]+' | head -1)"
   [ -z "$uinfo" ] && uinfo="$base/oauth/userinfo"
 
   # Candidate token strings from the CLI config dir (scan the whole directory,
