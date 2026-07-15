@@ -126,39 +126,62 @@ parse_flags() {
 # ---------------------------------------------------------------------------
 # Step 1: prerequisites
 # ---------------------------------------------------------------------------
+#
+# ensure_tool <cmd> <human-fix> <install-cmd...>
+#
+# Guarantees <cmd> is on PATH, or explains exactly how to get it. Behavior:
+#   - already present            -> no-op
+#   - --dry-run                  -> preview the install command, never fail
+#   - no consent to auto-install -> fail fast with <human-fix>
+#     (consent = --install-deps, or an --interactive session)
+#   - consent given              -> confirm (auto-passed by --yes), run the
+#     installer, then VALIDATE the command actually landed on PATH
+ensure_tool() {
+  local cmd="$1" fix="$2"; shift 2
+  command -v "$cmd" >/dev/null 2>&1 && return 0
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "dep '$cmd' missing; would install via: $*"
+    return 0
+  fi
+
+  # No consent to auto-install at all: fail fast with the manual command.
+  if [ "$INSTALL_DEPS" -eq 0 ] && [ "$INTERACTIVE" -eq 0 ]; then
+    die "'$cmd' is not installed" "$fix"
+  fi
+
+  # Consent exists; confirm intent (confirm() auto-passes with --yes, prompts
+  # under --interactive, and refuses non-interactively without --yes).
+  confirm "'$cmd' is missing. Install it now via: $*" \
+    || die "declined; '$cmd' not installed" "$fix"
+
+  # Validate the installer itself is available before invoking it.
+  command -v "$1" >/dev/null 2>&1 || die "cannot auto-install '$cmd': '$1' not found" "$fix"
+
+  log "installing '$cmd' via: $*"
+  "$@" || die "auto-install of '$cmd' failed" "$fix"
+  command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' still not on PATH after install" "$fix"
+  log "installed '$cmd'"
+}
+
 ensure_deps() {
   require_supported_platform
+  local stdiod_src; stdiod_src="$(dirname "$0")/../crates/edison-stdiod"
+  ensure_tool npx \
+    "install Node (brew install node) or re-run with --install-deps" \
+    brew install node
+  ensure_tool beeper \
+    "run: brew install beeper/tap/cli   (or re-run with --install-deps)" \
+    brew install beeper/tap/cli
+  ensure_tool edison-stdiod \
+    "run: cargo install --path crates/edison-stdiod   (or re-run with --install-deps)" \
+    cargo install --path "$stdiod_src"
 
-  if ! command -v npx >/dev/null 2>&1; then
-    if [ "$INSTALL_DEPS" -eq 1 ]; then
-      need_cmd brew "install Homebrew from https://brew.sh, or install Node yourself"
-      run brew install node
-    else
-      die "npx (Node.js) not found; $MCP_PKG runs via npx" \
-        "install Node (brew install node) or re-run with --install-deps"
-    fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "deps: preview only (nothing was installed)"
+  else
+    log "deps ok: npx, beeper, edison-stdiod all present"
   fi
-
-  if ! command -v beeper >/dev/null 2>&1; then
-    if [ "$INSTALL_DEPS" -eq 1 ]; then
-      need_cmd brew "install Homebrew from https://brew.sh"
-      run brew install beeper/tap/cli
-    else
-      die "the 'beeper' CLI is not installed" \
-        "run: brew install beeper/tap/cli   (or re-run this with --install-deps)"
-    fi
-  fi
-
-  if ! command -v edison-stdiod >/dev/null 2>&1; then
-    if [ "$INSTALL_DEPS" -eq 1 ]; then
-      need_cmd cargo "install a Rust toolchain from https://rustup.rs"
-      run cargo install --path "$(dirname "$0")/../crates/edison-stdiod"
-    else
-      die "the 'edison-stdiod' binary is not installed" \
-        "run: cargo install --path crates/edison-stdiod   (or re-run with --install-deps)"
-    fi
-  fi
-  log "deps ok: npx, beeper, edison-stdiod all present"
 }
 
 # ---------------------------------------------------------------------------
@@ -385,7 +408,9 @@ Common flags (also settable as UPPER_SNAKE env vars):
   --ew-api-key KEY     Edison API key        (EW_API_KEY)         required for install/mcp-url
   --beeper-token TOK   Beeper access token   (BEEPER_ACCESS_TOKEN) skips CLI minting
   --networks a,b,c     Link these after wiring (NETWORKS)
-  --install-deps       Auto-install npx/beeper/edison-stdiod via brew/cargo
+  --install-deps       Consent to auto-install missing deps (npx/beeper/edison-stdiod
+                       via brew/cargo). Confirms first unless --yes; validates each
+                       landed on PATH. --dry-run previews installs without running them.
   --dry-run            Print what would run; change nothing
   --yes                Skip confirmations (agents pass this)
   --interactive        Allow interactive prompts as a fallback
