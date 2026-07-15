@@ -289,18 +289,39 @@ discover_beeper_token() {
            | grep -oE 'https?://[^"]+' | head -1)"
   [ -z "$uinfo" ] && uinfo="$base/oauth/userinfo"
 
-  # Candidate token strings from the CLI config dir (scan the whole directory,
-  # since 'beeper config path' may point at a single file) plus the Keychain.
-  local cp dirs="$HOME/.beeper" cands="" d
+  # Resolve the CLI config dir (`beeper config path` returns ~/.beeper/config.json).
+  local cp dirs="$HOME/.beeper" d
   cp="$(beeper config path 2>/dev/null || true)"
   if [ -n "$cp" ]; then
     if [ -d "$cp" ]; then dirs="$cp $dirs"; else dirs="$(dirname "$cp") $dirs"; fi
   fi
+
+  # Primary: the target files store the bearer verbatim as "accessToken"
+  # (~/.beeper/targets/<name>.json). Extract those first and remember the first
+  # one as the canonical token to fall back on if live validation is flaky.
+  local explicit="" f t cands=""
+  for d in $dirs; do
+    [ -d "$d" ] || continue
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      t="$(sed -n 's/.*"accessToken"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$f" 2>/dev/null | head -n1)"
+      if [ -n "$t" ]; then cands="$t
+$cands"; [ -z "$explicit" ] && explicit="$t"; fi
+    done <<EOF2
+$(find "$d" -type f -name '*.json' 2>/dev/null)
+EOF2
+  done
+
+  # Secondary: token-shaped strings from small JSON files only (skip the DBs,
+  # logs, and the bundled server binary so real tokens are not crowded out).
   for d in $dirs; do
     [ -d "$d" ] || continue
     cands="$cands
-$(find "$d" -type f -exec cat {} + 2>/dev/null | grep -oE '[A-Za-z0-9._-]{24,}' | sort -u | head -n 80)"
+$(find "$d" -type f -name '*.json' -size -1M 2>/dev/null -exec cat {} + 2>/dev/null \
+      | grep -oE '[A-Za-z0-9._-]{24,}' | sort -u | head -n 120)"
   done
+
+  # Best-effort Keychain fallback.
   if command -v security >/dev/null 2>&1; then
     local svc kc
     for svc in beeper Beeper beeper-cli com.beeper.cli "Beeper Desktop" "Beeper Desktop API"; do
@@ -310,14 +331,23 @@ $kc"
     done
   fi
 
+  # Validate candidates against userinfo; use the first that authenticates.
   local tok code
   while IFS= read -r tok; do
     [ -z "$tok" ] && continue
     code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H "Authorization: Bearer $tok" "$uinfo" 2>/dev/null || true)"
     if [ "$code" = "200" ]; then printf '%s' "$tok"; return 0; fi
   done <<EOF
-$(printf '%s' "$cands" | sort -u)
+$cands
 EOF
+
+  # None validated live: if we found an explicit accessToken, trust it (the
+  # userinfo probe can be strict about scopes; the child will surface a real
+  # auth error if it is genuinely wrong).
+  if [ -n "$explicit" ]; then
+    warn "using the Beeper CLI accessToken without a live userinfo check"
+    printf '%s' "$explicit"; return 0
+  fi
   return 1
 }
 
