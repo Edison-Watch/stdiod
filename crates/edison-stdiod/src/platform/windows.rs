@@ -160,13 +160,7 @@ pub fn install() -> Result<()> {
     // Refuse to install without credentials - the daemon would just spin in a
     // reconnect loop. Surface the error now, not later in the logs.
     let cfg = crate::config::PersistedConfig::load()?;
-    if cfg.api_key.as_deref().unwrap_or("").is_empty()
-        || cfg.backend_url.as_deref().unwrap_or("").is_empty()
-    {
-        return Err(anyhow!(
-            "no credentials on disk. Run `edison-stdiod login --backend ... --api-key ...` first.",
-        ));
-    }
+    cfg.ensure_installable()?;
 
     let binary = std::env::current_exe().context("could not resolve current exe path")?;
     let user = current_user();

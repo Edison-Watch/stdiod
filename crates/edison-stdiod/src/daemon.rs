@@ -12,15 +12,14 @@
 //!    until the WS closes.
 //! 3. On disconnect we clear the handle (so children drop frames silently
 //!    until reconnect) and back off with exponential delay + jitter.
-//! 4. Auth failures (401/403) are surfaced as a hard error - v1.1 will
-//!    instead enter a ``needs_reauth`` state per ARCHITECTURE.md.
+//! 4. Auth failures (401/403) enter ``needs_reauth`` and wait for the
+//!    on-disk credential to change before reconnecting.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Result};
-use clap::Args;
 use edison_tunnel_protocol::{
     ClientHello, DesiredServer, DesiredStateUpdate, McpFrame, ServerHello, ServerSpawnResult,
     ServerSpecUpdate, TunnelError, TunnelFrame, PROTOCOL_VERSION,
@@ -30,67 +29,17 @@ use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use crate::config;
+pub use crate::daemon_auth::RunArgs;
+use crate::daemon_auth::{
+    connection_error_message, is_auth_rejection, is_protocol_rejection, requires_child_reset,
+    ResolveRunError, ResolvedRun,
+};
 use crate::env_store::{resolve_env_for_spawn, substitute_templated_args, EnvStore};
 use crate::proc::ChildServer;
 use crate::state::{ConnectionState, ServerEntry, ServerStatus, State, StateWriter};
 use crate::tunnel::{self, OutgoingHandle};
 
-#[derive(Debug, Args)]
-pub struct RunArgs {
-    /// Backend base URL (http://localhost:8000, https://dashboard.edison.watch, …).
-    /// Falls back to `backend_url` in `~/.config/edison-stdiod/config.toml`.
-    #[arg(long, env = "EDISON_BACKEND_URL")]
-    pub backend: Option<String>,
-    /// API key (Bearer token). Falls back to `api_key` in config.toml.
-    #[arg(long, env = "EDISON_API_KEY")]
-    pub api_key: Option<String>,
-    /// Optional edison secret key (X-Edison-Secret-Key).
-    #[arg(long, env = "EDISON_SECRET_KEY")]
-    pub edison_secret_key: Option<String>,
-    /// Device identifier (must match the row in the backend's `devices` table).
-    /// Defaults to the persisted `device_id`, then the machine hostname.
-    #[arg(long, env = "EDISON_DEVICE_ID")]
-    pub device_id: Option<String>,
-    /// Human-readable device label (shown in the admin UI).
-    #[arg(long, env = "EDISON_DEVICE_LABEL")]
-    pub label: Option<String>,
-}
-
-/// Snapshot of the resolved values the rest of `daemon` cares about. Built
-/// once per `run` from CLI flags overlaid on `~/.config/edison-stdiod/config.toml`.
-struct ResolvedRun {
-    backend: String,
-    api_key: String,
-    edison_secret_key: Option<String>,
-    device_id: String,
-    label: String,
-}
-
-impl ResolvedRun {
-    fn from_args(args: RunArgs) -> Result<Self> {
-        let persisted = config::PersistedConfig::load()?;
-        let merged = config::Resolved::merge(
-            persisted,
-            config::Resolved {
-                backend_url: args.backend,
-                api_key: args.api_key,
-                edison_secret_key: args.edison_secret_key,
-                device_id: args.device_id,
-                device_label: args.label,
-            },
-        );
-        Ok(Self {
-            backend: merged.backend_url()?.to_string(),
-            api_key: merged.api_key()?.to_string(),
-            edison_secret_key: merged.edison_secret_key.clone(),
-            device_id: merged.device_id()?,
-            label: merged.device_label(),
-        })
-    }
-}
-
-// Heartbeat tuning (per ARCHITECTURE.md "Disconnect handling"). The
-// daemon pings every 15s and considers the connection dead if no pong
+// The daemon pings every 15s and considers the connection dead if no pong
 // arrives within HEARTBEAT_STALE_AFTER. On stale, the WS is closed and
 // the outer reconnect loop kicks in.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
@@ -102,13 +51,49 @@ const HEARTBEAT_STALE_AFTER: Duration = Duration::from_secs(25);
 // Tear down immediately on resume instead of waiting it out.
 const HEARTBEAT_RESUME_GAP: Duration = Duration::from_secs(45);
 
-// Exponential backoff with ±25% jitter, capped at 30s so a reconnect after the
-// network returns (e.g. post-resume) isn't stranded behind a long backoff.
+// Exponential backoff with jitter, capped so reconnects stay responsive.
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
+const CONFIG_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 pub async fn run(args: RunArgs) -> Result<()> {
-    let resolved = ResolvedRun::from_args(args)?;
+    let initial = ResolvedRun::from_args(&args);
+    let writer = StateWriter::new(State {
+        backend_url: initial.as_ref().ok().map(|value| value.backend.clone()),
+        device_id: initial.as_ref().ok().map(|value| value.device_id.clone()),
+        device_label: initial.as_ref().ok().map(|value| value.label.clone()),
+        ..State::default()
+    });
+    writer.update(|_| {}).await;
+    let mut resolved = match initial {
+        Ok(resolved) => resolved,
+        Err(ResolveRunError::AwaitingLogin) => {
+            writer
+                .update(|state| {
+                    state.connection_state = ConnectionState::NeedsReauth;
+                    state.last_error = Some(
+                        "credentials are missing or incomplete; run `edison-stdiod login`".into(),
+                    );
+                })
+                .await;
+            loop {
+                sleep(CONFIG_POLL_INTERVAL).await;
+                if let Ok(resolved) = ResolvedRun::from_args(&args) {
+                    break resolved;
+                }
+            }
+        }
+        Err(error) => return Err(error.into()),
+    };
+    writer
+        .update(|state| {
+            state.connection_state = ConnectionState::Starting;
+            state.backend_url = Some(resolved.backend.clone());
+            state.device_id = Some(resolved.device_id.clone());
+            state.device_label = Some(resolved.label.clone());
+            state.last_error = None;
+        })
+        .await;
 
     // Resolve the interactive login-shell PATH once, up front, so child MCP
     // servers can find version-manager node/npx (nvm/fnm/...) - the daemon's own
@@ -120,21 +105,8 @@ pub async fn run(args: RunArgs) -> Result<()> {
     // diff and reconcile.
     let outgoing = OutgoingHandle::new();
 
-    // state.json is best-effort: ``StateWriter::update`` swallows write
-    // failures so a full disk can never stall the WS loop. Seed it with
-    // identity fields known at startup; per-transition fields (connection
-    // state, last_error, servers[]) get rewritten by the lifecycle hooks
-    // below.
-    let writer = StateWriter::new(State {
-        connection_state: ConnectionState::Starting,
-        backend_url: Some(resolved.backend.clone()),
-        device_id: Some(resolved.device_id.clone()),
-        device_label: Some(resolved.label.clone()),
-        ..State::default()
-    });
-    writer.update(|_| {}).await; // initial atomic write so `status` sees a file immediately
-
-    let env_store = EnvStore::open()?;
+    let env_namespace = resolved.env_namespace();
+    let env_store = EnvStore::open_for(env_namespace.as_deref())?;
     let supervisor = Arc::new(Mutex::new(Supervisor::new(
         outgoing.clone(),
         writer.clone(),
@@ -142,35 +114,175 @@ pub async fn run(args: RunArgs) -> Result<()> {
     )));
 
     let mut backoff = BACKOFF_MIN;
+    let shutdown_signal = crate::process_shutdown::wait();
+    tokio::pin!(shutdown_signal);
     loop {
-        let result = run_one_session(&resolved, supervisor.clone(), &outgoing, &writer).await;
-        match &result {
-            Ok(()) => {
-                info!("WS session ended cleanly; reconnecting");
-                backoff = BACKOFF_MIN;
-                writer
-                    .update(|s| {
-                        s.connection_state = ConnectionState::Reconnecting;
-                        s.last_error = None;
-                    })
-                    .await;
+        let result = tokio::select! {
+            result = run_one_session(&resolved, &args, supervisor.clone(), &outgoing, &writer) => result,
+            _ = &mut shutdown_signal => {
+                outgoing.clear();
+                supervisor.lock().await.shutdown_children().await;
+                return Ok(());
             }
-            Err(e) => {
-                warn!(error = %e, "WS session ended with error; will retry");
-                let msg = e.to_string();
-                writer
-                    .update(|s| {
-                        s.connection_state = ConnectionState::Reconnecting;
-                        s.last_error = Some(msg);
-                    })
-                    .await;
+        };
+        outgoing.clear();
+        let needs_reauth = result.as_ref().err().is_some_and(is_auth_rejection);
+        let needs_upgrade = result.as_ref().err().is_some_and(is_protocol_rejection);
+        let wait_limit = if needs_reauth || needs_upgrade {
+            supervisor.lock().await.shutdown_children().await;
+            let message = result
+                .as_ref()
+                .err()
+                .map(|error| connection_error_message(error, &resolved))
+                .unwrap_or_else(|| "backend rejected the credential".into());
+            if needs_upgrade {
+                warn!("backend rejected the tunnel protocol; waiting for an upgrade");
+            } else {
+                warn!("backend rejected the credential; waiting for login");
+            }
+            writer
+                .update(|state| {
+                    state.connection_state = if needs_upgrade {
+                        ConnectionState::NeedsUpgrade
+                    } else {
+                        ConnectionState::NeedsReauth
+                    };
+                    state.last_error = Some(message);
+                })
+                .await;
+            backoff = BACKOFF_MIN;
+            None
+        } else {
+            match &result {
+                Ok(()) => {
+                    info!("WS session ended cleanly; reconnecting");
+                    backoff = BACKOFF_MIN;
+                    writer
+                        .update(|state| {
+                            state.connection_state = ConnectionState::Reconnecting;
+                            state.last_error = None;
+                        })
+                        .await;
+                }
+                Err(error) => {
+                    let message = connection_error_message(error, &resolved);
+                    warn!(error = %message, "WS session ended with error; will retry");
+                    writer
+                        .update(|state| {
+                            state.connection_state = ConnectionState::Reconnecting;
+                            state.last_error = Some(message);
+                        })
+                        .await;
+                }
+            }
+            Some(jittered(backoff))
+        };
+        if let Some(delay) = wait_limit {
+            info!(?delay, "waiting before reconnect");
+        }
+        let next = tokio::select! {
+            next = wait_for_config(&resolved, &args, wait_limit, supervisor.clone(), &writer) => next,
+            _ = &mut shutdown_signal => {
+                outgoing.clear();
+                supervisor.lock().await.shutdown_children().await;
+                return Ok(());
+            }
+        };
+        let changed = !resolved.same_connection(&next);
+        let reset_children = requires_child_reset(&resolved, &next);
+        let current_env_namespace = resolved.env_namespace();
+        let next_env_namespace = next.env_namespace();
+        if current_env_namespace != next_env_namespace {
+            let env_store = EnvStore::open_for(next_env_namespace.as_deref())?;
+            supervisor.lock().await.switch_env_store(env_store).await;
+        } else if reset_children {
+            supervisor.lock().await.shutdown_children().await;
+        }
+        writer
+            .update(|state| {
+                state.connection_state = ConnectionState::Reconnecting;
+                state.backend_url = Some(next.backend.clone());
+                state.device_id = Some(next.device_id.clone());
+                state.device_label = Some(next.label.clone());
+                state.last_error = None;
+            })
+            .await;
+        resolved = next;
+        backoff = if changed {
+            BACKOFF_MIN
+        } else {
+            (backoff * 2).min(BACKOFF_MAX)
+        };
+    }
+}
+
+/// Wait until the normal retry deadline or until a changed usable config is
+/// observed. If credentials disappear (logout), pause indefinitely until a
+/// subsequent login produces a usable selection.
+async fn wait_for_config(
+    current: &ResolvedRun,
+    args: &RunArgs,
+    wait_limit: Option<Duration>,
+    supervisor: Arc<Mutex<Supervisor>>,
+    writer: &StateWriter,
+) -> ResolvedRun {
+    let deadline = wait_limit.and_then(|delay| Instant::now().checked_add(delay));
+    let mut saw_unusable_config = false;
+    loop {
+        match ResolvedRun::from_args(args) {
+            Ok(next) if !current.same_connection(&next) || saw_unusable_config => return next,
+            Ok(_) => {}
+            Err(_) => {
+                if !saw_unusable_config {
+                    supervisor.lock().await.shutdown_children().await;
+                    writer
+                        .update(|state| {
+                            state.connection_state = ConnectionState::NeedsReauth;
+                            state.last_error = Some(
+                                "credentials were removed or are incomplete; run `edison-stdiod login`"
+                                    .into(),
+                            );
+                        })
+                        .await;
+                }
+                saw_unusable_config = true;
             }
         }
-        outgoing.clear();
-        let delay = jittered(backoff);
-        info!(?delay, "sleeping before reconnect");
-        sleep(delay).await;
-        backoff = (backoff * 2).min(BACKOFF_MAX);
+
+        if !saw_unusable_config && deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return current.clone();
+        }
+        let sleep_for = deadline
+            .map(|deadline| {
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(CONFIG_POLL_INTERVAL)
+            })
+            .unwrap_or(CONFIG_POLL_INTERVAL);
+        sleep(sleep_for).await;
+    }
+}
+
+async fn wait_for_connection_change(
+    current: &ResolvedRun,
+    args: &RunArgs,
+    supervisor: Arc<Mutex<Supervisor>>,
+) {
+    loop {
+        sleep(CONFIG_POLL_INTERVAL).await;
+        match ResolvedRun::from_args(args) {
+            Ok(next) if !current.same_connection(&next) => {
+                if requires_child_reset(current, &next) {
+                    supervisor.lock().await.shutdown_children().await;
+                }
+                return;
+            }
+            Err(_) => {
+                supervisor.lock().await.shutdown_children().await;
+                return;
+            }
+            Ok(_) => {}
+        }
     }
 }
 
@@ -178,13 +290,14 @@ pub async fn run(args: RunArgs) -> Result<()> {
 /// reconnect), Err on connect failure.
 async fn run_one_session(
     args: &ResolvedRun,
+    run_args: &RunArgs,
     supervisor: Arc<Mutex<Supervisor>>,
     outgoing: &OutgoingHandle,
     writer: &StateWriter,
 ) -> Result<()> {
     let ws = tunnel::connect(
         &args.backend,
-        &args.api_key,
+        &args.credential,
         args.edison_secret_key.as_deref(),
         &args.device_id,
     )
@@ -204,7 +317,7 @@ async fn run_one_session(
     // Wire the broker before any task can publish a frame.
     outgoing.set(outgoing_tx.clone());
 
-    let ws_task = tokio::spawn(tunnel::run_frame_loop(ws, outgoing_rx, incoming_tx));
+    let mut ws_task = tokio::spawn(tunnel::run_frame_loop(ws, outgoing_rx, incoming_tx));
 
     // client_hello: announce which servers we already have running so the
     // backend can reconcile.
@@ -237,9 +350,21 @@ async fn run_one_session(
     };
 
     let result = tokio::select! {
-        r = drain_incoming(supervisor, &mut incoming_rx, last_pong) => r,
+        biased;
+        r = drain_incoming(supervisor.clone(), &mut incoming_rx, last_pong) => match r {
+            Ok(()) => websocket_task_result(&mut ws_task).await,
+            Err(error) => Err(error),
+        },
+        result = &mut ws_task => match result {
+            Ok(result) => result,
+            Err(error) => Err(anyhow::Error::from(error).context("WebSocket task failed")),
+        },
         _ = &mut hb_task => {
             warn!("heartbeat: stale connection, tearing down session to reconnect");
+            Ok(())
+        },
+        _ = wait_for_connection_change(args, run_args, supervisor) => {
+            info!("configuration changed; restarting authenticated session");
             Ok(())
         }
     };
@@ -247,6 +372,13 @@ async fn run_one_session(
     ws_task.abort();
     drop(outgoing_tx);
     result
+}
+
+async fn websocket_task_result(task: &mut tokio::task::JoinHandle<Result<()>>) -> Result<()> {
+    match task.await {
+        Ok(result) => result,
+        Err(error) => Err(anyhow::Error::from(error).context("WebSocket task failed")),
+    }
 }
 
 async fn drain_incoming(
@@ -289,7 +421,11 @@ async fn drain_incoming(
                 }
             }
             TunnelFrame::TunnelError(err) => {
-                warn!(?err, "tunnel_error from backend");
+                warn!(
+                    code = %err.code,
+                    server_id = err.server_id.as_deref(),
+                    "tunnel_error from backend"
+                );
                 // Device-wide (server_id=None) errors are soft rejections like
                 // the ``stdio_tunnel_disabled`` org feature flag. Bail so the
                 // outer reconnect loop persists the friendly message into
@@ -419,6 +555,19 @@ impl Supervisor {
             state,
             env_store,
         }
+    }
+
+    async fn switch_env_store(&mut self, env_store: EnvStore) {
+        self.shutdown_children().await;
+        self.env_store = env_store;
+    }
+
+    async fn shutdown_children(&mut self) {
+        let children = std::mem::take(&mut self.children);
+        for (_, child) in children {
+            child.shutdown().await;
+        }
+        self.publish_state().await;
     }
 
     /// Apply the device's stored values to the incoming `DesiredServer`:

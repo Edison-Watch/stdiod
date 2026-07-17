@@ -123,13 +123,7 @@ pub fn install() -> Result<()> {
     // a reconnect loop. Surface it now, not later in the logs. (Mirrors the
     // macOS path.)
     let cfg = crate::config::PersistedConfig::load()?;
-    if cfg.api_key.as_deref().unwrap_or("").is_empty()
-        || cfg.backend_url.as_deref().unwrap_or("").is_empty()
-    {
-        return Err(anyhow!(
-            "no credentials on disk. Run `edison-stdiod login --backend ... --api-key ...` first.",
-        ));
-    }
+    cfg.ensure_installable()?;
 
     if !systemd_user_available() {
         return Err(anyhow!(

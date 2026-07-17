@@ -13,6 +13,8 @@
 //! fails in-flight requests cleanly - this is the load-bearing pattern
 //! surfaced by the v0 spike (see `stdiod/ARCHITECTURE.md`).
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::process::Stdio;
 
 use anyhow::{Context, Result};
@@ -368,6 +370,8 @@ impl ChildServer {
         );
 
         let mut cmd = build_child_command(&enriched.command, &enriched.args);
+        #[cfg(unix)]
+        cmd.as_std_mut().process_group(0);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -418,6 +422,22 @@ impl ChildServer {
 
     /// Kill the child and abort the pumps.
     pub async fn shutdown(mut self) {
+        if let Some(pid) = self.child.id() {
+            #[cfg(unix)]
+            {
+                let _ = Command::new("kill")
+                    .args(["-KILL", "--", &format!("-{pid}")])
+                    .status()
+                    .await;
+            }
+            #[cfg(windows)]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .status()
+                    .await;
+            }
+        }
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
         self.stdin_pump.abort();

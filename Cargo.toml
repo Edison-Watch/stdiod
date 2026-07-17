@@ -15,20 +15,24 @@ homepage = "https://github.com/Edison-Watch/stdiod"
 
 [workspace.dependencies]
 anyhow = "1"
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "6"
 futures-util = "0.3"
+getrandom = "0.3"
 once_cell = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+webbrowser = "1"
 
 # Workspace member crates
 edison-tunnel-protocol = { path = "crates/edison-tunnel-protocol", version = "0.0.1" }

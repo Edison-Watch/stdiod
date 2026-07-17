@@ -18,7 +18,8 @@
 //! ```text
 //! ~/.config/edison-stdiod/
 //!     config.toml          backend URL + credentials (mode 0600)
-//!     server_envs.json     this file (mode 0600)
+//!     server_envs.json     legacy-auth values (mode 0600)
+//!     server_envs/         client-installation-scoped values
 //! ```
 //!
 //! ### On-disk shape
@@ -44,8 +45,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::paths;
+use crate::{paths, secure_file};
 
 /// Map of `ENV_KEY -> ENV_VALUE`. `BTreeMap` rather than `HashMap` so on-disk
 /// JSON is deterministic; makes diffing the file in the wild far easier.
@@ -85,6 +87,23 @@ impl EnvStore {
     /// and produces an empty store; first write will create it.
     pub fn open() -> Result<Self> {
         Self::open_at(paths::config_dir()?.join("server_envs.json"))
+    }
+
+    /// New browser-auth installations use an isolated file derived from the
+    /// canonical backend origin and backend-issued installation ID. Legacy
+    /// auth continues to use the original `server_envs.json` path.
+    pub fn open_for(client_installation_id: Option<&str>) -> Result<Self> {
+        Self::open_for_at(&paths::config_dir()?, client_installation_id)
+    }
+
+    fn open_for_at(config_dir: &Path, client_installation_id: Option<&str>) -> Result<Self> {
+        let path = match client_installation_id {
+            Some(id) => config_dir
+                .join("server_envs")
+                .join(format!("{}.json", namespace_hash(id))),
+            None => config_dir.join("server_envs.json"),
+        };
+        Self::open_at(path)
     }
 
     /// Testable variant that lets the caller pick the path.
@@ -167,18 +186,7 @@ impl EnvStore {
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
 
-        let tmp = tmp_path_for(&self.path);
-        std::fs::write(&tmp, body).with_context(|| format!("writing {}", tmp.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&tmp)?.permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(&tmp, perms)?;
-        }
-        std::fs::rename(&tmp, &self.path)
-            .with_context(|| format!("renaming {} -> {}", tmp.display(), self.path.display()))?;
-        Ok(())
+        secure_file::write_private(&self.path, body.as_bytes())
     }
 }
 
@@ -215,10 +223,12 @@ pub fn substitute_templated_args(
         .collect()
 }
 
-fn tmp_path_for(path: &Path) -> PathBuf {
-    let mut s = path.as_os_str().to_owned();
-    s.push(".tmp");
-    PathBuf::from(s)
+fn namespace_hash(client_installation_id: &str) -> String {
+    Sha256::digest(client_installation_id.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 #[cfg(test)]
@@ -478,9 +488,34 @@ mod tests {
         let path = dir.join("server_envs.json");
         let mut store = EnvStore::open_at(path.clone()).unwrap();
         store.set("srv-1", env_spec(&[("A", "1")])).unwrap();
-        let tmp = tmp_path_for(&path);
-        assert!(!tmp.exists(), "tmp file should have been renamed away");
+        let prefix = format!(".{}.", path.file_name().unwrap().to_string_lossy());
+        assert!(std::fs::read_dir(&dir).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&prefix)
+        }));
         assert!(path.exists());
+    }
+
+    #[test]
+    fn repeated_writes_replace_existing_store() {
+        let dir = tempdir();
+        let path = dir.join("server_envs.json");
+        let mut store = EnvStore::open_at(path.clone()).unwrap();
+        store.set("srv-1", env_spec(&[("A", "1")])).unwrap();
+        store.set("srv-1", env_spec(&[("A", "2")])).unwrap();
+        let reopened = EnvStore::open_at(path).unwrap();
+        assert_eq!(
+            reopened
+                .get("srv-1")
+                .unwrap()
+                .env
+                .get("A")
+                .map(String::as_str),
+            Some("2")
+        );
     }
 
     #[cfg(unix)]
@@ -541,6 +576,34 @@ mod tests {
         let fallback = sample_env(&[("Y", "2")]);
         let got = resolve_env_for_spawn(Some(&stored), &fallback);
         assert_eq!(got, fallback);
+    }
+
+    #[test]
+    fn client_installations_and_issuers_use_isolated_env_stores() {
+        let dir = tempdir();
+        let mut first = EnvStore::open_for_at(&dir, Some("https://one.test\ninstall-1")).unwrap();
+        first
+            .set("server-1", env_spec(&[("ACCOUNT_SECRET", "first")]))
+            .unwrap();
+
+        let second = EnvStore::open_for_at(&dir, Some("https://one.test\ninstall-2")).unwrap();
+        let other_issuer =
+            EnvStore::open_for_at(&dir, Some("https://two.test\ninstall-1")).unwrap();
+        let legacy = EnvStore::open_for_at(&dir, None).unwrap();
+        assert!(second.get("server-1").is_none());
+        assert!(other_issuer.get("server-1").is_none());
+        assert!(legacy.get("server-1").is_none());
+
+        let first = EnvStore::open_for_at(&dir, Some("https://one.test\ninstall-1")).unwrap();
+        assert_eq!(
+            first
+                .get("server-1")
+                .unwrap()
+                .env
+                .get("ACCOUNT_SECRET")
+                .map(String::as_str),
+            Some("first")
+        );
     }
 
     #[test]

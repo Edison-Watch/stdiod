@@ -31,15 +31,23 @@ coordinated disclosure and are happy to credit reporters.
 stdiod runs as a long-lived daemon on a user's machine and handles credentials,
 so a few properties are worth understanding:
 
-- **Credentials at rest.** The API key (and optional secret key) are written in
-  plaintext to `~/.config/edison-stdiod/config.toml` with file mode `0600`. They
-  are not encrypted on disk. Protect the host account accordingly; rotate a key
-  by re-running `edison-stdiod login --api-key …`, and remove all persisted state
-  with `edison-stdiod uninstall --purge`.
+- **Credentials at rest.** The long-lived opaque client access token (and
+  optional secret key) are written in plaintext to
+  `~/.config/edison-stdiod/config.toml` with file mode `0600`. The MVP has no
+  refresh token. Protect the host account accordingly. `edison-stdiod logout`
+  best-effort revokes the client token and always removes the local credential;
+  `edison-stdiod uninstall --purge` removes all persisted state. Deprecated
+  legacy API keys use the same storage protections.
+- **Account isolation.** Per-server environment values may contain secrets.
+  Browser-auth installations store them in separate files namespaced by a hash
+  of the backend-issued `client_installation_id`; switching accounts does not
+  load the previous account's values. Legacy API-key auth continues to use its
+  original `server_envs.json` store.
 - **Outbound-only transport.** The daemon makes a single outbound TLS WebSocket
-  connection to the configured backend and authenticates with a Bearer token. It
-  opens no inbound listening ports. Always use an `https://`/`wss://` backend URL
-  outside of local development.
+  connection to the configured backend and authenticates with a scoped Bearer
+  client token. It
+  opens no inbound listening ports. Backend configuration accepts HTTPS origins;
+  cleartext HTTP is restricted to localhost and loopback IPs for development.
 - **Child processes.** The daemon spawns local MCP server subprocesses as
   instructed by the authenticated backend. Those processes run with the
   privileges of the user running the daemon and can access that user's files and
