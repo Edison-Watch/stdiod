@@ -325,8 +325,9 @@ async fn run_one_session(
         .lock()
         .await
         .children
-        .keys()
-        .cloned()
+        .iter()
+        .filter(|(_, child)| !child.has_exited())
+        .map(|(id, _)| id.clone())
         .collect::<Vec<_>>();
     outgoing
         .send(TunnelFrame::ClientHello(ClientHello {
@@ -412,12 +413,35 @@ async fn drain_incoming(
             }
             TunnelFrame::DesiredStateUpdate(update) => sup.apply_delta(update).await,
             TunnelFrame::McpFrame(McpFrame { server_id, frame }) => {
-                if let Some(child) = sup.children.get(&server_id) {
-                    if let Err(e) = child.outbound_tx.send(frame).await {
-                        warn!(server_id = %server_id, error = %e, "child outbound channel closed");
+                let terminal_error = if let Some(child) = sup.children.get_mut(&server_id) {
+                    if child.has_exited() {
+                        child.take_terminal_error()
+                    } else {
+                        match child.outbound_tx.try_send(frame) {
+                            Ok(()) => None,
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                warn!(server_id = %server_id, "child outbound channel closed");
+                                child.take_terminal_error()
+                            }
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                child.mark_unresponsive();
+                                Some(TunnelError {
+                                    server_id: Some(server_id.clone()),
+                                    related_jsonrpc_id: None,
+                                    code: "server_unresponsive".into(),
+                                    message: "Local MCP process is not accepting requests.".into(),
+                                })
+                            }
+                        }
                     }
                 } else {
                     warn!(server_id = %server_id, "mcp_frame for unknown server; dropping");
+                    None
+                };
+                if let Some(error) = terminal_error {
+                    sup.tunnel_outgoing
+                        .send(TunnelFrame::TunnelError(error))
+                        .await;
                 }
             }
             TunnelFrame::TunnelError(err) => {
@@ -466,10 +490,7 @@ async fn drain_incoming(
             TunnelFrame::ServerSpawnResult(_)
             | TunnelFrame::ClientHello(_)
             | TunnelFrame::Pong(_) => {
-                // ServerSpawnResult is daemon→backend only; if it ever
-                // arrives here it's a backend bug. ClientHello likewise
-                // shouldn't come back from the backend. Pong is just
-                // liveness, already bumped above.
+                // These frames are daemon→backend only, or liveness already handled above.
             }
         }
     }
@@ -626,19 +647,13 @@ impl Supervisor {
             }
         }
 
-        // Spawn newly-desired enabled servers, or respawn any whose spec
-        // changed while we were disconnected. Identical-spec children are
-        // left alone so reconnects don't gratuitously restart anything.
-        // Equality is checked against the raw (backend-authoritative)
-        // DesiredServer; env_store-only changes are not raw differences and
-        // arrive separately as ServerSpecUpdate / ServerEnvUpdate, which
-        // handle their own respawn.
+        // Respawn changed/exited servers; dedicated frames handle env-only changes.
         for (id, desired) in wanted {
             if !desired.enabled {
                 continue;
             }
             if let Some(existing) = self.children.get(&id) {
-                if existing.desired_raw == desired {
+                if existing.desired_raw == desired && !existing.has_exited() {
                     continue;
                 }
                 if let Some(stale) = self.children.remove(&id) {
@@ -650,21 +665,22 @@ impl Supervisor {
         self.publish_state().await;
     }
 
-    /// Spawn a single desired server. Emits a ``ServerSpawnResult`` either
-    /// way so the backend can gate its create_server HTTP response on the
-    /// actual spawn outcome. On failure we also emit the legacy
-    /// ``tunnel_error{spawn_failed}`` for any older backend that listens
-    /// for it.
-    ///
-    /// Takes the *raw* DesiredServer (backend-authoritative, `{KEY}`
-    /// placeholders intact). Enrichment runs here against the current
-    /// env_store so subsequent respawns triggered by
-    /// ``ServerSpecUpdate`` / ``ServerEnvUpdate`` always read the latest
-    /// values - re-enriching an already-substituted spec would be a no-op.
+    /// Spawn one raw desired server after applying current local values. Reports
+    /// the spawn result and retains placeholders so later respawns re-enrich cleanly.
     async fn try_spawn(&mut self, raw: DesiredServer) {
         let server_id = raw.server_id.clone();
+        let sensitive_arg_values = self
+            .env_store
+            .get(&server_id)
+            .map(|spec| spec.templated_args.values().cloned().collect())
+            .unwrap_or_default();
         let enriched = self.enrich(raw.clone());
-        match ChildServer::spawn(&raw, &enriched, self.tunnel_outgoing.clone()) {
+        match ChildServer::spawn(
+            &raw,
+            &enriched,
+            self.tunnel_outgoing.clone(),
+            sensitive_arg_values,
+        ) {
             Ok(child) => {
                 self.children.insert(server_id.clone(), child);
                 self.tunnel_outgoing
@@ -735,9 +751,7 @@ impl Supervisor {
         server_id: String,
         env: std::collections::BTreeMap<String, String>,
     ) {
-        // Merge, not replace: the backend forwards only the changed keys (it
-        // never holds the others), so replacing would drop every variable the
-        // update didn't mention.
+        // Merge because the backend forwards only changed keys.
         if let Err(e) = self.env_store.merge_env(&server_id, env) {
             warn!(server_id = %server_id, error = %e, "failed to persist server_env_update");
             return;
@@ -753,23 +767,7 @@ impl Supervisor {
     }
 
     async fn apply_delta(&mut self, delta: DesiredStateUpdate) {
-        // ``added`` and ``updated`` are treated identically by spec, but
-        // ``updated`` arrives often as a side effect of unrelated CRUD on
-        // the same device (the backend resends the full current set as
-        // ``updated`` whenever anything changes - see
-        // ``push_desired_state`` in src/api/v1/routes/stdio_tunnel.py).
-        // Killing+respawning a healthy child whose spec hasn't actually
-        // changed silently invalidates the backend's already-initialized
-        // MCP session against it: the new child sees the next ``tools/list``
-        // as its first message and exits (the MCP lifecycle spec requires
-        // ``initialize`` first).
-        //
-        // So: only restart when the spec genuinely differs from what we
-        // last spawned with. ``enabled=false`` still tears the child down.
-        // Iterate the raw DesiredServer here; ``try_spawn`` enriches
-        // internally and stores the raw on ChildServer so subsequent
-        // ServerSpecUpdate / ServerEnvUpdate respawns can re-enrich
-        // against the latest env_store. Equality is on raw.
+        // Preserve healthy identical children so tools/list never precedes initialize.
         for d in delta.added.into_iter().chain(delta.updated) {
             if !d.enabled {
                 if let Some(existing) = self.children.remove(&d.server_id) {
@@ -778,7 +776,7 @@ impl Supervisor {
                 continue;
             }
             if let Some(existing) = self.children.get(&d.server_id) {
-                if existing.desired_raw == d {
+                if existing.desired_raw == d && !existing.has_exited() {
                     continue;
                 }
             }
