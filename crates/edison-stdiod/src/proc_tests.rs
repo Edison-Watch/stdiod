@@ -50,7 +50,7 @@ async fn broken_stdin_replays_actionable_terminal_error() {
     frame_tx.send(json!({"jsonrpc": "2.0"})).await.unwrap();
     drop(frame_tx);
 
-    stdin_pump("server".into(), stdin, frame_rx, outgoing, diagnostics).await;
+    stdin_pump("server".into(), stdin, frame_rx, outgoing, diagnostics, None).await;
 
     let frame = wire_rx.recv().await.unwrap();
     let TunnelFrame::TunnelError(error) = frame else {
@@ -88,6 +88,11 @@ async fn exited_process_reports_final_stderr_once() {
         panic!("expected terminal tunnel error");
     };
     assert!(error.message.contains("connect failed: ECONNREFUSED"));
+    assert!(
+        error.message.contains("exited with code 7"),
+        "terminal diagnostic should carry the child's exit code: {}",
+        error.message
+    );
     assert!(
         tokio::time::timeout(Duration::from_millis(100), wire_rx.recv())
             .await

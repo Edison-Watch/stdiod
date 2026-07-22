@@ -244,7 +244,11 @@ impl Resolved {
 
         if !has_legacy_override {
             if let (Some(requested), Some(saved)) = (&override_backend, &persisted_backend) {
-                if requested != saved {
+                // A saved backend URL alone (first run, or after logout) is
+                // not a binding - only reject the override when the config
+                // still holds credentials or account state issued by the
+                // saved backend.
+                if requested != saved && persisted.has_issuer_bound_values() {
                     return Err(anyhow!(
                         "--backend does not match the backend bound to the saved credential; pass an explicit legacy --api-key or run `edison-stdiod login`"
                     ));

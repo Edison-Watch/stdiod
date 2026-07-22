@@ -75,8 +75,7 @@ pub async fn run(args: LoginArgs) -> Result<()> {
     println!("Waiting for authorization...");
 
     let token = auth.poll(&code, pkce.verifier()).await?;
-    let account_changed = !same_issuer
-        || cfg.client_installation_id.as_deref() != Some(token.client_installation_id.as_str());
+    let account_changed = account_changed(&cfg, same_issuer, &token);
 
     cfg.backend_url = Some(backend);
     cfg.api_key = None;
@@ -115,6 +114,21 @@ async fn legacy_login(
     save_login(&cfg)?;
     revoke_previous(previous_credential).await;
     Ok(())
+}
+
+/// A reused installation can still come back bound to a different user or
+/// organization, so compare every server-issued account identifier - not just
+/// the installation - before deciding to keep per-user state like the Edison
+/// secret key or to skip revoking the previous client credential.
+fn account_changed(
+    cfg: &PersistedConfig,
+    same_issuer: bool,
+    token: &crate::auth::DeviceTokenResponse,
+) -> bool {
+    !same_issuer
+        || cfg.client_installation_id.as_deref() != Some(token.client_installation_id.as_str())
+        || cfg.authenticated_user_id.as_deref() != Some(token.user_id.as_str())
+        || cfg.authenticated_org_id.as_deref() != Some(token.org_id.as_str())
 }
 
 fn capture_client_revocation(cfg: &PersistedConfig) -> Option<(String, String)> {
@@ -248,6 +262,30 @@ mod tests {
         };
         assert_eq!(reusable_installation(&cfg, true), Some("install-1"));
         assert_eq!(reusable_installation(&cfg, false), None);
+    }
+
+    #[test]
+    fn reauthorization_for_a_different_user_or_org_is_an_account_change() {
+        let cfg = PersistedConfig {
+            backend_url: Some("https://issuer.test".into()),
+            client_installation_id: Some("install-1".into()),
+            authenticated_user_id: Some("user-1".into()),
+            authenticated_org_id: Some("org-1".into()),
+            ..Default::default()
+        };
+        let token = |user: &str, org: &str| crate::auth::DeviceTokenResponse {
+            access_token: "token".into(),
+            token_type: "Bearer".into(),
+            client_installation_id: "install-1".into(),
+            device_id: "device-1".into(),
+            scope: vec![],
+            user_id: user.into(),
+            org_id: org.into(),
+        };
+        assert!(!account_changed(&cfg, true, &token("user-1", "org-1")));
+        assert!(account_changed(&cfg, false, &token("user-1", "org-1")));
+        assert!(account_changed(&cfg, true, &token("user-2", "org-1")));
+        assert!(account_changed(&cfg, true, &token("user-1", "org-2")));
     }
 
     #[test]

@@ -207,51 +207,59 @@ pub async fn run_frame_loop(
         let _ = sink.close().await;
     });
 
-    while let Some(msg) = stream.next().await {
-        let msg = msg.context("WS recv failed")?;
-        match msg {
-            Message::Text(s) => {
-                let value: serde_json::Value = match serde_json::from_str(&s) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!(error = %e, "WS text not JSON; dropping");
-                        continue;
-                    }
-                };
-                match TunnelFrame::from_json(value) {
-                    Ok(frame) => {
-                        if incoming.send(frame).await.is_err() {
-                            debug!("incoming consumer dropped; ending recv loop");
-                            break;
+    // Run the receive loop inside a block so every exit path - including the
+    // error returns for recv failures and reasoned closes - falls through to
+    // the send-task cleanup below instead of leaking the sink task (and its
+    // socket half) into the supervisor's error handling.
+    let result = async {
+        while let Some(msg) = stream.next().await {
+            let msg = msg.context("WS recv failed")?;
+            match msg {
+                Message::Text(s) => {
+                    let value: serde_json::Value = match serde_json::from_str(&s) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            warn!(error = %e, "WS text not JSON; dropping");
+                            continue;
+                        }
+                    };
+                    match TunnelFrame::from_json(value) {
+                        Ok(frame) => {
+                            if incoming.send(frame).await.is_err() {
+                                debug!("incoming consumer dropped; ending recv loop");
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "unparseable tunnel frame; dropping");
                         }
                     }
-                    Err(e) => {
-                        warn!(error = %e, "unparseable tunnel frame; dropping");
-                    }
                 }
-            }
-            Message::Close(frame) => {
-                if let Some(frame) = frame {
-                    let reason = frame.reason.to_string();
-                    if !reason.is_empty() {
-                        return Err(session_close_error(frame.code, reason).into());
+                Message::Close(frame) => {
+                    if let Some(frame) = frame {
+                        let reason = frame.reason.to_string();
+                        if !reason.is_empty() {
+                            return Err(session_close_error(frame.code, reason).into());
+                        }
+                        info!(code = %frame.code, "backend closed WS");
+                    } else {
+                        info!("backend closed WS");
                     }
-                    info!(code = %frame.code, "backend closed WS");
-                } else {
-                    info!("backend closed WS");
+                    break;
                 }
-                break;
+                Message::Ping(p) => debug!(len = p.len(), "got ping"),
+                Message::Pong(_) => debug!("got pong"),
+                Message::Binary(_) => debug!("ignoring binary frame"),
+                Message::Frame(_) => {}
             }
-            Message::Ping(p) => debug!(len = p.len(), "got ping"),
-            Message::Pong(_) => debug!("got pong"),
-            Message::Binary(_) => debug!("ignoring binary frame"),
-            Message::Frame(_) => {}
         }
+        Ok(())
     }
+    .await;
 
     send_task.abort();
     let _ = send_task.await;
-    Ok(())
+    result
 }
 
 fn session_close_error(code: CloseCode, reason: String) -> SessionCloseError {

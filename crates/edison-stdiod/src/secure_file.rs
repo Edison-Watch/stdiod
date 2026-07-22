@@ -55,13 +55,17 @@ fn create_temp(path: &Path) -> Result<(PathBuf, File)> {
 }
 
 fn unique_temp_path(path: &Path) -> PathBuf {
+    unique_sibling_path(path, "tmp")
+}
+
+fn unique_sibling_path(path: &Path, suffix: &str) -> PathBuf {
     let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
     let file_name = path
         .file_name()
         .unwrap_or_else(|| std::ffi::OsStr::new("private"));
     let mut tmp_name = std::ffi::OsString::from(".");
     tmp_name.push(file_name);
-    tmp_name.push(format!(".{}.{}.tmp", std::process::id(), id));
+    tmp_name.push(format!(".{}.{}.{}", std::process::id(), id, suffix));
     path.with_file_name(tmp_name)
 }
 
@@ -81,14 +85,32 @@ fn replace(tmp: &Path, path: &Path) -> io::Result<()> {
             ) =>
         {
             // std has no Windows equivalent of POSIX rename-over-existing.
-            // This remove/rename fallback makes repeated saves work, but there
-            // is a brief non-atomic window where the destination is absent.
-            match std::fs::remove_file(path) {
+            // Move the current file aside instead of deleting it so a crash
+            // or failure between the two renames leaves the previous
+            // contents on disk (as the backup) rather than losing the
+            // credential outright; roll the backup straight back when
+            // installing the new file fails. A brief window where the
+            // destination is absent remains, but never one where no copy of
+            // the data exists.
+            let backup = unique_sibling_path(path, "bak");
+            match std::fs::rename(path, &backup) {
                 Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                // Destination vanished since the failed rename; retry directly.
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return std::fs::rename(tmp, path);
+                }
                 Err(error) => return Err(error),
             }
-            std::fs::rename(tmp, path)
+            match std::fs::rename(tmp, path) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&backup);
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = std::fs::rename(&backup, path);
+                    Err(error)
+                }
+            }
         }
         Err(error) => Err(error),
     }

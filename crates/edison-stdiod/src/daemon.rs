@@ -413,23 +413,28 @@ async fn drain_incoming(
             }
             TunnelFrame::DesiredStateUpdate(update) => sup.apply_delta(update).await,
             TunnelFrame::McpFrame(McpFrame { server_id, frame }) => {
+                let mut restart_unresponsive = false;
                 let terminal_error = if let Some(child) = sup.children.get_mut(&server_id) {
                     if child.has_exited() {
-                        child.take_terminal_error()
+                        child.take_terminal_error().await
                     } else {
                         match child.outbound_tx.try_send(frame) {
                             Ok(()) => None,
                             Err(mpsc::error::TrySendError::Closed(_)) => {
                                 warn!(server_id = %server_id, "child outbound channel closed");
-                                child.take_terminal_error()
+                                child.take_terminal_error().await
                             }
                             Err(mpsc::error::TrySendError::Full(_)) => {
-                                child.mark_unresponsive();
+                                warn!(
+                                    server_id = %server_id,
+                                    "child outbound queue full; restarting unresponsive server"
+                                );
+                                restart_unresponsive = true;
                                 Some(TunnelError {
                                     server_id: Some(server_id.clone()),
                                     related_jsonrpc_id: None,
                                     code: "server_unresponsive".into(),
-                                    message: "Local MCP process is not accepting requests.".into(),
+                                    message: "Local MCP process stopped accepting requests; restarting it.".into(),
                                 })
                             }
                         }
@@ -442,6 +447,9 @@ async fn drain_incoming(
                     sup.tunnel_outgoing
                         .send(TunnelFrame::TunnelError(error))
                         .await;
+                }
+                if restart_unresponsive {
+                    sup.restart_unresponsive(&server_id).await;
                 }
             }
             TunnelFrame::TunnelError(err) => {
@@ -615,7 +623,7 @@ impl Supervisor {
             .map(|(name, child)| ServerEntry {
                 name: name.clone(),
                 state: ServerStatus::Running,
-                pid: child.child.id(),
+                pid: child.pid,
             })
             .collect()
     }
@@ -711,6 +719,20 @@ impl Supervisor {
                     .await;
             }
         }
+    }
+
+    /// Kill and respawn a child whose outbound queue overflowed. Dropping
+    /// the wedged process restores request forwarding immediately instead of
+    /// leaving frames silently dropped until the next desired-state
+    /// reconciliation happens to arrive.
+    async fn restart_unresponsive(&mut self, server_id: &str) {
+        let Some(existing) = self.children.remove(server_id) else {
+            return;
+        };
+        let raw = existing.desired_raw.clone();
+        existing.shutdown().await;
+        self.try_spawn(raw).await;
+        self.publish_state().await;
     }
 
     /// Persist a full resolved spec for a server (the backend's substituted

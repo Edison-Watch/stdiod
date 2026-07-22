@@ -141,8 +141,13 @@ impl AuthClient {
     pub fn new(base: impl Into<String>) -> Result<Self, AuthError> {
         let base = config::normalize_backend_url(&base.into())
             .map_err(|_| AuthError::Protocol("backend URL was invalid".into()))?;
+        // Never follow redirects: a 307/308 would re-send the POST body -
+        // including the PKCE verifier and tokens - to whatever location the
+        // response names, so authorization material must stay bound to the
+        // configured backend.
         let http = Client::builder()
             .timeout(Duration::from_secs(20))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|source| HttpError::Request {
                 operation: "building auth HTTP client".into(),
@@ -331,7 +336,8 @@ fn validate_device_code(code: &DeviceCodeResponse) -> Result<(), AuthError> {
 }
 
 fn validate_token(token: &DeviceTokenResponse) -> Result<(), AuthError> {
-    if token.token_type != "Bearer" {
+    // RFC 6749 §5.1: token_type is case-insensitive.
+    if !token.token_type.eq_ignore_ascii_case("bearer") {
         return Err(AuthError::Protocol("token_type was not Bearer".into()));
     }
     if token.access_token.is_empty()
@@ -389,6 +395,24 @@ mod tests {
         let expected = URL_SAFE_NO_PAD.encode(Sha256::digest(pkce.verifier().as_bytes()));
         assert_eq!(pkce.challenge(), expected);
         assert_eq!(pkce.challenge().len(), 43);
+    }
+
+    #[test]
+    fn token_type_is_accepted_case_insensitively() {
+        let mut token = DeviceTokenResponse {
+            access_token: "token".into(),
+            token_type: "bearer".into(),
+            client_installation_id: "install-1".into(),
+            device_id: "device-1".into(),
+            scope: vec![],
+            user_id: "user-1".into(),
+            org_id: "org-1".into(),
+        };
+        assert!(validate_token(&token).is_ok());
+        token.token_type = "BEARER".into();
+        assert!(validate_token(&token).is_ok());
+        token.token_type = "MAC".into();
+        assert!(validate_token(&token).is_err());
     }
 
     #[test]
