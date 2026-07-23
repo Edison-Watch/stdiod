@@ -10,14 +10,18 @@
 
 use clap::{Parser, Subcommand};
 
+mod auth;
 mod cli;
 mod config;
 mod daemon;
+mod daemon_auth;
 mod env_store;
 mod http;
 mod paths;
 mod platform;
 mod proc;
+mod process_shutdown;
+mod secure_file;
 mod state;
 mod tunnel;
 
@@ -33,8 +37,10 @@ struct Cli {
 enum Command {
     /// Run the daemon in the foreground. v1 MVP entry point.
     Run(daemon::RunArgs),
-    /// Persist credentials + backend URL to `~/.config/edison-stdiod/config.toml`.
+    /// Authorize this device in a browser and persist its client credential.
     Login(cli::login::LoginArgs),
+    /// Revoke the current client credential and remove local account bindings.
+    Logout(cli::logout::LogoutArgs),
     /// Register the OS supervisor unit (macOS LaunchAgent) so the daemon
     /// starts at login and is restarted on crash. Requires `login` first.
     Install(cli::install::InstallArgs),
@@ -103,7 +109,8 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Run(args) => daemon::run(args).await,
-        Command::Login(args) => cli::login::run(args),
+        Command::Login(args) => cli::login::run(args).await,
+        Command::Logout(args) => cli::logout::run(args).await,
         Command::Install(args) => cli::install::install(args),
         Command::Uninstall(args) => cli::install::uninstall(args),
         Command::Status(args) => cli::status::run(args),

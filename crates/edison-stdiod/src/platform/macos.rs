@@ -151,13 +151,7 @@ pub fn install() -> Result<()> {
     // would just spin in a reconnect loop. The user sees this error
     // immediately rather than discovering it in the logs later.
     let cfg = crate::config::PersistedConfig::load()?;
-    if cfg.api_key.as_deref().unwrap_or("").is_empty()
-        || cfg.backend_url.as_deref().unwrap_or("").is_empty()
-    {
-        return Err(anyhow!(
-            "no credentials on disk. Run `edison-stdiod login --backend ... --api-key ...` first.",
-        ));
-    }
+    cfg.ensure_installable()?;
 
     let binary = std::env::current_exe().context("could not resolve current exe path")?;
     let log = paths::daemon_log_file()?;

@@ -13,17 +13,27 @@
 //! fails in-flight requests cleanly - this is the load-bearing pattern
 //! surfaced by the v0 spike (see `stdiod/ARCHITECTURE.md`).
 
-use std::process::Stdio;
+use std::collections::VecDeque;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+use std::process::{ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use edison_tunnel_protocol::{DesiredServer, McpFrame, TunnelError, TunnelFrame};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::tunnel::OutgoingHandle;
+
+const STDERR_TAIL_MAX_LINES: usize = 20;
+const STDERR_TAIL_MAX_BYTES: usize = 8 * 1024;
+const STDERR_LINE_MAX_CHARS: usize = 500;
 
 /// Build the base `Command` for a child MCP server.
 ///
@@ -324,6 +334,146 @@ mod win {
 }
 
 /// One running child stdio MCP server.
+#[derive(Clone, Default)]
+struct ChildDiagnostics {
+    stderr_tail: Arc<Mutex<VecDeque<String>>>,
+    sensitive_values: Arc<Vec<String>>,
+    exited: Arc<AtomicBool>,
+    reported: Arc<AtomicBool>,
+    stderr_done: Arc<AtomicBool>,
+    stderr_done_notify: Arc<Notify>,
+}
+
+impl ChildDiagnostics {
+    fn new(values: impl IntoIterator<Item = String>) -> Self {
+        let mut sensitive_values: Vec<String> = values
+            .into_iter()
+            .filter(|value| value.len() >= 4)
+            .collect();
+        sensitive_values.sort();
+        sensitive_values.dedup();
+        sensitive_values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        Self {
+            sensitive_values: Arc::new(sensitive_values),
+            ..Self::default()
+        }
+    }
+
+    fn record_stderr(&self, line: &str) -> Option<String> {
+        let mut line = line.to_string();
+        for sensitive in self.sensitive_values.iter() {
+            line = line.replace(sensitive, "[redacted]");
+        }
+        let line = sanitize_diagnostic_line(&line)?;
+        let mut tail = self
+            .stderr_tail
+            .lock()
+            .expect("child diagnostics mutex poisoned");
+        tail.push_back(line.clone());
+        while tail.len() > STDERR_TAIL_MAX_LINES
+            || tail.iter().map(String::len).sum::<usize>() > STDERR_TAIL_MAX_BYTES
+        {
+            tail.pop_front();
+        }
+        Some(line)
+    }
+
+    fn mark_stderr_done(&self) {
+        self.stderr_done.store(true, Ordering::Release);
+        self.stderr_done_notify.notify_waiters();
+    }
+
+    async fn wait_for_stderr(&self) {
+        let notified = self.stderr_done_notify.notified();
+        if self.stderr_done.load(Ordering::Acquire) {
+            return;
+        }
+        let _ = tokio::time::timeout(Duration::from_millis(100), notified).await;
+    }
+
+    fn terminal_error(&self, server_id: &str, status: Option<&ExitStatus>) -> TunnelError {
+        self.exited.store(true, Ordering::Release);
+        let mut message = match status.and_then(ExitStatus::code) {
+            Some(code) => format!("Local MCP process exited with code {code}."),
+            None => "Local MCP process exited.".to_string(),
+        };
+        let tail = self
+            .stderr_tail
+            .lock()
+            .expect("child diagnostics mutex poisoned");
+        if !tail.is_empty() {
+            message.push_str("\nLast output:\n");
+            message.push_str(&tail.iter().cloned().collect::<Vec<_>>().join("\n"));
+        }
+        TunnelError {
+            server_id: Some(server_id.to_string()),
+            related_jsonrpc_id: None,
+            code: "server_offline".into(),
+            message,
+        }
+    }
+
+    fn take_terminal_error(
+        &self,
+        server_id: &str,
+        status: Option<&ExitStatus>,
+    ) -> Option<TunnelError> {
+        if self.reported.swap(true, Ordering::AcqRel) {
+            self.exited.store(true, Ordering::Release);
+            return None;
+        }
+        Some(self.terminal_error(server_id, status))
+    }
+}
+
+fn sanitize_diagnostic_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let has_credential = [
+        "authorization",
+        "bearer ",
+        "token",
+        "secret",
+        "password",
+        "api_key",
+        "apikey",
+        "api-key",
+        "cookie",
+        "credential",
+        "private key",
+        "access_key",
+        "access-key",
+        "session_key",
+        "ghp_",
+        "github_pat_",
+        "sk-proj-",
+        "xoxb-",
+        "xoxp-",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker));
+    if has_credential {
+        return Some("[redacted potentially sensitive output]".into());
+    }
+    let has_url_userinfo = trimmed.find("://").is_some_and(|scheme_end| {
+        trimmed[scheme_end + 3..]
+            .split(['/', ' ', '\t'])
+            .next()
+            .is_some_and(|authority| authority.contains('@'))
+    });
+    let looks_like_jwt = trimmed.contains("eyJ") && trimmed.matches('.').count() >= 2;
+    if has_url_userinfo || looks_like_jwt {
+        return Some("[redacted potentially sensitive output]".into());
+    }
+    if trimmed.contains("://") && trimmed.contains('?') {
+        return Some("[redacted URL containing query parameters]".into());
+    }
+    Some(trimmed.chars().take(STDERR_LINE_MAX_CHARS).collect())
+}
+
 pub struct ChildServer {
     /// Logical id matching `desired.server_id`. Useful for logging/diagnostics
     /// even though the supervisor keys children by id externally.
@@ -338,10 +488,17 @@ pub struct ChildServer {
     /// baked in. ``apply_snapshot``/``apply_delta`` also compare this
     /// against the incoming raw to decide whether a kill+respawn is needed.
     pub desired_raw: DesiredServer,
-    pub child: Child,
+    /// Shared with the pumps so terminal diagnostics can report the real
+    /// exit status instead of a bare "process exited".
+    child: SharedChild,
+    /// PID captured at spawn for status reporting; the live `Child` sits
+    /// behind an async lock.
+    pub pid: Option<u32>,
     pub outbound_tx: mpsc::Sender<serde_json::Value>,
     pub stdin_pump: JoinHandle<()>,
     pub stdout_pump: JoinHandle<()>,
+    stderr_pump: JoinHandle<()>,
+    diagnostics: ChildDiagnostics,
 }
 
 impl ChildServer {
@@ -360,6 +517,7 @@ impl ChildServer {
         raw: &DesiredServer,
         enriched: &DesiredServer,
         tunnel_outgoing: OutgoingHandle,
+        sensitive_arg_values: Vec<String>,
     ) -> Result<Self> {
         info!(
             server_id = %enriched.server_id,
@@ -368,6 +526,8 @@ impl ChildServer {
         );
 
         let mut cmd = build_child_command(&enriched.command, &enriched.args);
+        #[cfg(unix)]
+        cmd.as_std_mut().process_group(0);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -389,46 +549,115 @@ impl ChildServer {
         let stdout = child.stdout.take().context("child stdout not captured")?;
         let stderr = child.stderr.take().context("child stderr not captured")?;
 
+        let pid = child.id();
+        let child: SharedChild = Arc::new(AsyncMutex::new(child));
+
+        let sensitive_values = enriched.env.values().cloned().chain(sensitive_arg_values);
+        let diagnostics = ChildDiagnostics::new(sensitive_values);
         let (outbound_tx, outbound_rx) = mpsc::channel::<serde_json::Value>(64);
-        let stdin_pump = tokio::spawn(stdin_pump(enriched.server_id.clone(), stdin, outbound_rx));
+        let stdin_pump = tokio::spawn(stdin_pump(
+            enriched.server_id.clone(),
+            stdin,
+            outbound_rx,
+            tunnel_outgoing.clone(),
+            diagnostics.clone(),
+            Some(child.clone()),
+        ));
         let stdout_pump = tokio::spawn(stdout_pump(
             enriched.server_id.clone(),
             stdout,
             tunnel_outgoing,
+            diagnostics.clone(),
+            Some(child.clone()),
         ));
 
         // Drain stderr into our log so child diagnostics aren't lost.
         let server_id = enriched.server_id.clone();
-        tokio::spawn(async move {
+        let stderr_diagnostics = diagnostics.clone();
+        let stderr_pump = tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                debug!(server_id = %server_id, "[child stderr] {}", line);
+                if let Some(sanitized) = stderr_diagnostics.record_stderr(&line) {
+                    debug!(server_id = %server_id, "[child stderr] {}", sanitized);
+                }
             }
+            stderr_diagnostics.mark_stderr_done();
         });
 
         Ok(Self {
             server_id: enriched.server_id.clone(),
             desired_raw: raw.clone(),
             child,
+            pid,
             outbound_tx,
             stdin_pump,
             stdout_pump,
+            stderr_pump,
+            diagnostics,
         })
     }
 
+    pub async fn take_terminal_error(&mut self) -> Option<TunnelError> {
+        let status = self.child.lock().await.try_wait().ok().flatten();
+        self.diagnostics
+            .take_terminal_error(&self.server_id, status.as_ref())
+    }
+
+    pub fn has_exited(&self) -> bool {
+        self.diagnostics.exited.load(Ordering::Acquire)
+    }
+
     /// Kill the child and abort the pumps.
-    pub async fn shutdown(mut self) {
-        let _ = self.child.start_kill();
-        let _ = self.child.wait().await;
+    pub async fn shutdown(self) {
+        let mut child = self.child.lock().await;
+        if let Some(pid) = child.id() {
+            #[cfg(unix)]
+            {
+                let _ = Command::new("kill")
+                    .args(["-KILL", "--", &format!("-{pid}")])
+                    .status()
+                    .await;
+            }
+            #[cfg(windows)]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .status()
+                    .await;
+            }
+        }
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        drop(child);
         self.stdin_pump.abort();
         self.stdout_pump.abort();
+        self.stderr_pump.abort();
     }
 }
 
-async fn stdin_pump(
+type SharedChild = Arc<AsyncMutex<Child>>;
+
+/// Best-effort exit status for terminal diagnostics. The child's pipes close
+/// a moment before the process becomes reapable, so poll `try_wait` briefly
+/// rather than reporting a statusless exit for a process that just died.
+async fn child_exit_status(child: Option<&SharedChild>) -> Option<ExitStatus> {
+    let child = child?;
+    for _ in 0..10 {
+        if let Ok(Some(status)) = child.lock().await.try_wait() {
+            return Some(status);
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    None
+}
+
+async fn stdin_pump<W: AsyncWrite + Unpin>(
     server_id: String,
-    mut stdin: tokio::process::ChildStdin,
+    mut stdin: W,
     mut rx: mpsc::Receiver<serde_json::Value>,
+    tunnel_outgoing: OutgoingHandle,
+    diagnostics: ChildDiagnostics,
+    child: Option<SharedChild>,
 ) {
     while let Some(body) = rx.recv().await {
         let mut line = match serde_json::to_vec(&body) {
@@ -441,12 +670,30 @@ async fn stdin_pump(
         line.push(b'\n');
         if let Err(e) = stdin.write_all(&line).await {
             warn!(server_id = %server_id, error = %e, "stdin write failed; ending pump");
+            report_terminal(&server_id, &diagnostics, &tunnel_outgoing, child.as_ref()).await;
             return;
         }
         if let Err(e) = stdin.flush().await {
             warn!(server_id = %server_id, error = %e, "stdin flush failed; ending pump");
+            report_terminal(&server_id, &diagnostics, &tunnel_outgoing, child.as_ref()).await;
             return;
         }
+    }
+}
+
+/// Shared terminal-error reporting for both pumps: give stderr a moment to
+/// drain, attach the child's exit status when it can be observed, and emit
+/// the one-shot `server_offline` tunnel error.
+async fn report_terminal(
+    server_id: &str,
+    diagnostics: &ChildDiagnostics,
+    tunnel_outgoing: &OutgoingHandle,
+    child: Option<&SharedChild>,
+) {
+    diagnostics.wait_for_stderr().await;
+    let status = child_exit_status(child).await;
+    if let Some(error) = diagnostics.take_terminal_error(server_id, status.as_ref()) {
+        tunnel_outgoing.send(TunnelFrame::TunnelError(error)).await;
     }
 }
 
@@ -454,6 +701,8 @@ async fn stdout_pump(
     server_id: String,
     stdout: tokio::process::ChildStdout,
     tunnel_outgoing: OutgoingHandle,
+    diagnostics: ChildDiagnostics,
+    child: Option<SharedChild>,
 ) {
     let mut reader = BufReader::new(stdout).lines();
     loop {
@@ -493,13 +742,10 @@ async fn stdout_pump(
     // Load-bearing per v0 spike + ARCHITECTURE.md: tell the backend that
     // this server's subprocess is gone so any in-flight tool calls fail
     // cleanly instead of hanging.
-    tunnel_outgoing
-        .send(TunnelFrame::TunnelError(TunnelError {
-            server_id: Some(server_id.clone()),
-            related_jsonrpc_id: None,
-            code: "server_offline".into(),
-            message: "stdio subprocess exited".into(),
-        }))
-        .await;
+    report_terminal(&server_id, &diagnostics, &tunnel_outgoing, child.as_ref()).await;
     info!(server_id = %server_id, "child stdout pump ended");
 }
+
+#[cfg(test)]
+#[path = "proc_tests.rs"]
+mod tests;

@@ -7,6 +7,7 @@
 
 pub mod install;
 pub mod login;
+pub mod logout;
 pub mod logs;
 pub mod server;
 pub mod status;
