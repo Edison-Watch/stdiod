@@ -49,6 +49,7 @@ export HOMEBREW_NO_ENV_HINTS="${HOMEBREW_NO_ENV_HINTS:-1}"
 # Defaults (every one overridable by flag or environment variable)
 # ---------------------------------------------------------------------------
 EW_BACKEND="${EW_BACKEND:-https://dashboard.edison.watch}"
+EW_BACKEND_SET=0                                   # 1 once --ew-backend is given on the CLI
 EW_API_KEY="${EW_API_KEY:-}"                       # only for the mcp-url client snippet
 BEEPER_ACCESS_TOKEN="${BEEPER_ACCESS_TOKEN:-}"     # skip token discovery if set
 SERVER_NAME="${SERVER_NAME:-beeper}"               # tunnel server name / gateway prefix
@@ -147,7 +148,7 @@ needval() {
 parse_flags() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      --ew-backend)   needval $# "$1" "${2:-}"; EW_BACKEND="$2"; shift 2;;
+      --ew-backend)   needval $# "$1" "${2:-}"; EW_BACKEND="$2"; EW_BACKEND_SET=1; shift 2;;
       --ew-api-key)   needval $# "$1" "${2:-}"; EW_API_KEY="$2"; shift 2;;
       --beeper-token) needval $# "$1" "${2:-}"; BEEPER_ACCESS_TOKEN="$2"; shift 2;;
       --server-name)  needval $# "$1" "${2:-}"; SERVER_NAME="$2"; shift 2;;
@@ -400,7 +401,14 @@ ensure_stdiod_auth() {
   if [ "$RELOGIN" -eq 0 ] && stdiod_logged_in; then
     local saved; saved="$(stdiod_saved_backend)"
     if [ -n "$saved" ] && [ "$saved" != "${EW_BACKEND%/}" ]; then
-      warn "this device is authorized to ${saved}, not ${EW_BACKEND}; using ${saved} (pass --relogin to switch)"
+      # An explicit --ew-backend that disagrees with the saved session is
+      # ambiguous, so stop rather than silently target the wrong backend. With
+      # no explicit flag, prefer the authorized session.
+      if [ "$EW_BACKEND_SET" -eq 1 ]; then
+        die "this device is authorized to ${saved}, but --ew-backend asked for ${EW_BACKEND}" \
+          "pass --relogin to switch to ${EW_BACKEND}, or drop --ew-backend to keep ${saved}"
+      fi
+      warn "using the authorized backend ${saved} (pass --ew-backend <url> --relogin to switch)"
       EW_BACKEND="$saved"
     fi
     ok "already authorized on this device (client credential in $(stdiod_config))"
