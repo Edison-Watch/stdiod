@@ -67,6 +67,7 @@ VERBOSE=0
 NO_COLOR_FLAG=0
 NO_OPEN=0            # pass through to `edison-stdiod login --no-open` for headless auth
 RELOGIN=0           # force a fresh `edison-stdiod login` even if already authorized
+REVEAL=0            # `token --reveal` prints the full token to stdout (default: masked)
 
 PROG="$(basename "$0")"
 
@@ -155,6 +156,7 @@ parse_flags() {
       --device-label) needval $# "$1" "${2:-}"; DEVICE_LABEL="$2"; shift 2;;
       --no-open)      NO_OPEN=1; shift;;
       --relogin)      RELOGIN=1; shift;;
+      --reveal)       REVEAL=1; shift;;
       --dry-run)      DRY_RUN=1; shift;;
       -y|--yes)       ASSUME_YES=1; shift;;
       --interactive)  INTERACTIVE=1; shift;;
@@ -566,18 +568,20 @@ cmd_status() {
 
 cmd_token() {
   step "Discovering a Beeper access token"
-  if [ -n "$BEEPER_ACCESS_TOKEN" ]; then
-    ok "a token is already supplied [$(mask_token "$BEEPER_ACCESS_TOKEN")]"
+  local tok="$BEEPER_ACCESS_TOKEN"
+  if [ -z "$tok" ]; then
+    if ! tok="$(discover_beeper_token)" || [ -z "$tok" ]; then
+      warn "no reusable token found (is Beeper Desktop running with MCP enabled?)"
+      die "no Beeper access token discovered" "create one in Beeper Desktop > Settings > Developers, or pass --beeper-token <TOKEN>"
+    fi
+  fi
+  if [ "$REVEAL" -eq 1 ]; then
+    ok "token found [$(mask_token "$tok")]; printing the full value to stdout"
+    printf '%s\n' "$tok"          # raw value on stdout so it can be piped/copied
     return 0
   fi
-  local tok
-  if tok="$(discover_beeper_token)" && [ -n "$tok" ]; then
-    ok "found a working token [$(mask_token "$tok")]"
-    todo "set it as BEEPER_ACCESS_TOKEN on server '$SERVER_NAME' in the Edison dashboard"
-    return 0
-  fi
-  warn "no reusable token found (is Beeper Desktop running with MCP enabled?)"
-  die "no Beeper access token discovered" "create one in Beeper Desktop > Settings > Developers, or pass --beeper-token <TOKEN>"
+  ok "found a working token [$(mask_token "$tok")]"
+  info "run '$PROG bind-token --ew-api-key <admin-key>' to push it (no copy needed); add --reveal to print the full value"
 }
 
 # bind-token: push BEEPER_ACCESS_TOKEN onto the (already approved) server via the
