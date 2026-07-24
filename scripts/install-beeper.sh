@@ -52,6 +52,8 @@ EW_BACKEND="${EW_BACKEND:-https://dashboard.edison.watch}"
 EW_API_KEY="${EW_API_KEY:-}"                       # only for the mcp-url client snippet
 BEEPER_ACCESS_TOKEN="${BEEPER_ACCESS_TOKEN:-}"     # skip token discovery if set
 SERVER_NAME="${SERVER_NAME:-beeper}"               # tunnel server name / gateway prefix
+# Display label for this script's own output only. It does NOT set the stdiod
+# device record: `edison-stdiod login` issues the device identity server-side.
 DEVICE_LABEL="${DEVICE_LABEL:-$(hostname -s 2>/dev/null || echo my-mac)}"
 MCP_PKG="${MCP_PKG:-@beeper/desktop-mcp}"          # the stdio proxy npx package
 
@@ -109,6 +111,7 @@ need_cmd() {
 }
 
 confirm() {
+  local ans
   [ "$ASSUME_YES" -eq 1 ] && return 0
   [ "$INTERACTIVE" -eq 0 ] && die "refusing to run a confirming action non-interactively: $1" \
     "pass --yes to proceed, or --dry-run to preview"
@@ -129,14 +132,26 @@ require_supported_platform() {
 # ---------------------------------------------------------------------------
 # Flag parsing (shared across subcommands; unknown flags fail fast)
 # ---------------------------------------------------------------------------
+# Guard a value-taking flag before dereferencing its value. Args: remaining
+# count ($#), the flag, and the candidate value. Routes through die() (our error
+# contract) instead of `set -u`'s raw "unbound variable" when the value is
+# missing (`install --ew-backend`), and rejects a flag-looking value so a
+# forgotten argument does not silently swallow the next flag
+# (`install --ew-backend --no-open`).
+needval() {
+  local n="$1" flag="$2" val="${3:-}"
+  { [ "$n" -ge 2 ] && [ "${val#-}" = "$val" ]; } \
+    || die "flag '$flag' needs a value" "example: $flag <value>"
+}
+
 parse_flags() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      --ew-backend)   EW_BACKEND="$2"; shift 2;;
-      --ew-api-key)   EW_API_KEY="$2"; shift 2;;
-      --beeper-token) BEEPER_ACCESS_TOKEN="$2"; shift 2;;
-      --server-name)  SERVER_NAME="$2"; shift 2;;
-      --device-label) DEVICE_LABEL="$2"; shift 2;;
+      --ew-backend)   needval $# "$1" "${2:-}"; EW_BACKEND="$2"; shift 2;;
+      --ew-api-key)   needval $# "$1" "${2:-}"; EW_API_KEY="$2"; shift 2;;
+      --beeper-token) needval $# "$1" "${2:-}"; BEEPER_ACCESS_TOKEN="$2"; shift 2;;
+      --server-name)  needval $# "$1" "${2:-}"; SERVER_NAME="$2"; shift 2;;
+      --device-label) needval $# "$1" "${2:-}"; DEVICE_LABEL="$2"; shift 2;;
       --no-open)      NO_OPEN=1; shift;;
       --relogin)      RELOGIN=1; shift;;
       --dry-run)      DRY_RUN=1; shift;;
@@ -224,6 +239,9 @@ beeper_api_base() {
   return 1
 }
 
+# Non-fatal: if Beeper Desktop is not answering we still wire the automatable
+# Edison side and print the exact action, so `install` makes progress instead of
+# stopping the operator at the first prerequisite.
 ensure_beeper_desktop() {
   step "Beeper Desktop MCP endpoint"
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -239,8 +257,7 @@ ensure_beeper_desktop() {
   todo "open the Beeper Desktop app, then Settings > Developers > MCP and enable it"
   todo "link the chats you want (WhatsApp / Telegram / ...) inside the Beeper app"
   info "the headless 'beeper' Server does not expose MCP (github.com/beeper/cli issue #20), so the Desktop app must be running"
-  die "Beeper Desktop MCP endpoint unavailable" \
-    "enable MCP in Beeper Desktop and keep the app running, then re-run: $PROG install"
+  warn "continuing to wire the Edison side; the Beeper child stays idle until this is enabled"
 }
 
 # ---------------------------------------------------------------------------
@@ -252,34 +269,43 @@ mask_token() {
   printf '%s...%s (len %s)' "${s:0:6}" "${s: -4}" "${#s}"
 }
 
-# discover_beeper_token - find a Desktop API bearer the Beeper app already holds,
-# so you can paste it into the dashboard without minting a fresh one by hand.
-# Beeper has no headless mint (OAuth is authorization_code + PKCE), so we gather
-# candidate strings from the Beeper config dir and the macOS Keychain and keep
-# the first that authenticates against the local OAuth userinfo endpoint. Prints
-# the working token to stdout; diagnostics to stderr.
-discover_beeper_token() {
-  local base uinfo=""
-  if ! base="$(beeper_api_base)"; then
-    warn "the Beeper Desktop API is not reachable on 23373-23378"
-    return 1
-  fi
+# Resolve the Beeper OAuth userinfo endpoint from the well-known document, with
+# a sensible default. Echoes the URL; empty on no reachable API.
+beeper_userinfo_endpoint() {
+  local base uinfo
+  base="$(beeper_api_base)" || return 1
   uinfo="$(curl -s -m 4 "$base/.well-known/oauth-authorization-server" 2>/dev/null \
            | grep -oE '"userinfo_endpoint"[[:space:]]*:[[:space:]]*"[^"]+"' \
            | grep -oE 'https?://[^"]+' | head -1)"
   [ -z "$uinfo" ] && uinfo="$base/oauth/userinfo"
+  printf '%s' "$uinfo"
+}
 
-  local dirs="$HOME/.beeper" d cp
+# discover_beeper_token - find a Desktop API bearer the Beeper app already holds,
+# so you can paste it into the dashboard without minting a fresh one by hand.
+# Beeper has no headless mint (OAuth is authorization_code + PKCE). The reliable
+# invariant is that Beeper stores the bearer verbatim as "accessToken"; a capped
+# generic scrape and the Keychain are best-effort fallbacks. Candidates are
+# validated against the userinfo endpoint, first one that returns 200 wins.
+# Prints the working token to stdout; diagnostics to stderr.
+discover_beeper_token() {
+  local uinfo
+  uinfo="$(beeper_userinfo_endpoint)" || { warn "the Beeper Desktop API is not reachable on 23373-23378"; return 1; }
+
+  # Search the Beeper config dir(s). Use an array so paths with spaces (the
+  # macOS "Application Support" norm, or a spaced $HOME) survive intact.
+  local dirs=("$HOME/.beeper") d cp
   if command -v beeper >/dev/null 2>&1; then
     cp="$(beeper config path 2>/dev/null || true)"
     if [ -n "$cp" ]; then
-      if [ -d "$cp" ]; then dirs="$cp $dirs"; else dirs="$(dirname "$cp") $dirs"; fi
+      if [ -d "$cp" ]; then dirs=("$cp" "${dirs[@]}"); else dirs=("$(dirname "$cp")" "${dirs[@]}"); fi
     fi
   fi
 
-  # Primary: target files store the bearer verbatim as "accessToken".
+  # Primary (targeted): target files store the bearer verbatim as "accessToken".
+  # Remember the first as the canonical fallback if live validation is flaky.
   local explicit="" f t cands=""
-  for d in $dirs; do
+  for d in "${dirs[@]}"; do
     [ -d "$d" ] || continue
     while IFS= read -r f; do
       [ -n "$f" ] || continue
@@ -291,12 +317,12 @@ $(find "$d" -type f -name '*.json' 2>/dev/null)
 EOF2
   done
 
-  # Secondary: token-shaped strings from small JSON files only.
-  for d in $dirs; do
+  # Secondary (best-effort, capped): token-shaped strings from small JSON files.
+  for d in "${dirs[@]}"; do
     [ -d "$d" ] || continue
     cands="$cands
-$(find "$d" -type f -name '*.json' -size -1M 2>/dev/null -exec cat {} + 2>/dev/null \
-      | grep -oE '[A-Za-z0-9._-]{24,}' | sort -u | head -n 120)"
+$(find "$d" -type f -name '*.json' -size -1M -exec cat {} + 2>/dev/null \
+      | grep -oE '[A-Za-z0-9._-]{24,}' | sort -u | head -n 40)"
   done
 
   # Best-effort Keychain fallback.
@@ -309,13 +335,17 @@ $kc"
     done
   fi
 
-  local tok code
+  # Validate candidates (deduped, order preserved so accessToken hits first).
+  # Bounded so a bad guess set cannot turn this into minutes of silent curls.
+  local tok code tried=0 max=20
   while IFS= read -r tok; do
     [ -z "$tok" ] && continue
-    code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H "Authorization: Bearer $tok" "$uinfo" 2>/dev/null || true)"
+    tried=$((tried + 1))
+    if [ "$tried" -gt "$max" ]; then warn "checked $max candidate tokens without a live match; stopping"; break; fi
+    code="$(curl -s -o /dev/null -w '%{http_code}' -m 3 -H "Authorization: Bearer $tok" "$uinfo" 2>/dev/null || true)"
     if [ "$code" = "200" ]; then printf '%s' "$tok"; return 0; fi
   done <<EOF
-$cands
+$(printf '%s\n' "$cands" | awk 'NF && !seen[$0]++')
 EOF
 
   if [ -n "$explicit" ]; then
@@ -323,6 +353,23 @@ EOF
     printf '%s' "$explicit"; return 0
   fi
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# Shared: is SERVER_NAME already an approved server bound to this device?
+# ---------------------------------------------------------------------------
+# Single definition of the script's idempotency contract, used by install and
+# doctor. Prefers a precise jq match on the server name; falls back to a raw
+# substring grep when jq is absent.
+server_registered() {
+  command -v edison-stdiod >/dev/null 2>&1 || return 1
+  local json; json="$(edison-stdiod server list --json 2>/dev/null || true)"
+  [ -n "$json" ] || return 1
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$json" | jq -e --arg n "$SERVER_NAME" 'any(.. | objects; .name? == $n)' >/dev/null 2>&1
+  else
+    printf '%s' "$json" | grep -q "\"$SERVER_NAME\""
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -336,6 +383,14 @@ stdiod_logged_in() {
   [ -f "$f" ] && grep -q 'client_access_token' "$f" 2>/dev/null
 }
 
+# Echo the backend_url persisted in config (trailing slash stripped), or nothing.
+stdiod_saved_backend() {
+  local f; f="$(stdiod_config)"
+  [ -f "$f" ] || return 0
+  sed -n 's/^[[:space:]]*backend_url[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' \
+    "$f" 2>/dev/null | head -n1 | sed 's:/*$::'
+}
+
 ensure_stdiod_auth() {
   step "Edison device authorization (browser)"
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -343,7 +398,12 @@ ensure_stdiod_auth() {
     return 0
   fi
   if [ "$RELOGIN" -eq 0 ] && stdiod_logged_in; then
-    ok "already authorized on this device (client credential present in $(stdiod_config))"
+    local saved; saved="$(stdiod_saved_backend)"
+    if [ -n "$saved" ] && [ "$saved" != "${EW_BACKEND%/}" ]; then
+      warn "this device is authorized to ${saved}, not ${EW_BACKEND}; using ${saved} (pass --relogin to switch)"
+      EW_BACKEND="$saved"
+    fi
+    ok "already authorized on this device (client credential in $(stdiod_config))"
     return 0
   fi
   # `edison-stdiod login` runs the OAuth device flow: it prints a URL to approve
@@ -372,7 +432,7 @@ ensure_stdiod_supervised() {
 # ---------------------------------------------------------------------------
 # Under device authorization, `server add` submits a request scoped to this
 # exact device (POST /api/v1/client/mcp-requests). An org admin approves it once
-# in the dashboard; it does not run until then. `server list` shows only
+# in the dashboard; it does not run until then. `server_registered` lists only
 # approved servers bound to this device, so we use it as the idempotency check.
 submit_beeper_server() {
   step "Submitting the Beeper server"
@@ -381,7 +441,7 @@ submit_beeper_server() {
       --command npx --arg=-y --arg="$MCP_PKG"
     return 0
   fi
-  if edison-stdiod server list --json 2>/dev/null | grep -q "\"$SERVER_NAME\""; then
+  if server_registered; then
     ok "server '$SERVER_NAME' is already approved and bound to this device"
     return 0
   fi
@@ -390,7 +450,7 @@ submit_beeper_server() {
   local out rc
   out="$(edison-stdiod server add "$SERVER_NAME" --display-name "Beeper" \
         --command npx --arg=-y --arg="$MCP_PKG" 2>&1)" && rc=0 || rc=$?
-  printf '%s\n' "$out" | grep -viE '^\s*$' >&2 || true
+  printf '%s\n' "$out" | grep -viE '^[[:space:]]*$' >&2 || true
   if [ "$rc" -ne 0 ]; then
     if printf '%s' "$out" | grep -qiE 'already (exists|submitted|pending)|duplicate'; then
       ok "a request for '$SERVER_NAME' is already pending; approve it in the dashboard"
@@ -429,8 +489,8 @@ report_beeper_token() {
   fi
   todo "in the Edison dashboard, open server '$SERVER_NAME' and set env BEEPER_ACCESS_TOKEN=<token above>"
   info "the daemon respawns the child with that env once it is saved"
-  # In --json mode the token is emitted by print_result; here we keep it off
-  # stdout so it is not captured by accident.
+  # Keep the token off stdout so it is not captured by accident; print_result
+  # only reports whether one was found.
   BEEPER_ACCESS_TOKEN="$tok"
 }
 
@@ -448,13 +508,13 @@ print_result() {
   [ -t 1 ] || { b=; g=; d=; r=; }
   printf '%smcp_url:%s %s%s%s\n' "$b" "$r" "$g" "$mcp_url" "$r"
   printf '%sserver:%s  %s (gateway prefix: %s_*)\n' "$b" "$r" "$SERVER_NAME" "$SERVER_NAME"
-  printf '%sdevice:%s  %s\n' "$b" "$r" "$DEVICE_LABEL"
+  printf '%sdevice:%s  %s (display label)\n' "$b" "$r" "$DEVICE_LABEL"
   if [ -n "$EW_API_KEY" ]; then
     printf '\n%s# add to Claude Code (gateway auth uses your Edison API key):%s\n' "$d" "$r"
     printf 'claude mcp add edison %s -t http -H "Authorization: Bearer %s" -s user\n' "$mcp_url" "$EW_API_KEY"
   else
     printf '\n%s# the AI client authenticates to the gateway with your Edison API key or OAuth;%s\n' "$d" "$r"
-    printf '%s# pass --ew-api-key to print a ready-to-run `claude mcp add` snippet.%s\n' "$d" "$r"
+    printf '%s# pass --ew-api-key to print a ready-to-run claude-mcp-add snippet.%s\n' "$d" "$r"
   fi
 }
 
@@ -483,16 +543,16 @@ cmd_doctor() {
   if stdiod_logged_in; then ok "device authorized to Edison"; else warn "not authorized (run: $PROG install)"; allgood=0; fi
   if command -v edison-stdiod >/dev/null 2>&1 && edison-stdiod status >/dev/null 2>&1; then
     ok "stdiod daemon connected"; else warn "stdiod daemon not running (run: $PROG install)"; allgood=0; fi
-  if command -v edison-stdiod >/dev/null 2>&1 && edison-stdiod server list --json 2>/dev/null | grep -q "\"$SERVER_NAME\""; then
+  if server_registered; then
     ok "server '$SERVER_NAME' approved on this device"; else warn "server '$SERVER_NAME' not approved yet (submit + approve in dashboard)"; fi
-  [ "$allgood" -eq 1 ] && ok "core checks passed" || die "some checks failed (see above)" "$PROG install --install-deps"
+  if [ "$allgood" -eq 1 ]; then ok "core checks passed"; else die "some checks failed (see above)" "$PROG install --install-deps"; fi
 }
 
 cmd_status() {
   need_cmd edison-stdiod
   run edison-stdiod status
   local base; base="$(beeper_api_base 2>/dev/null || true)"
-  [ -n "$base" ] && ok "Beeper Desktop API: $base" || warn "Beeper Desktop API not reachable"
+  if [ -n "$base" ]; then ok "Beeper Desktop API: $base"; else warn "Beeper Desktop API not reachable"; fi
 }
 
 cmd_token() {
@@ -594,6 +654,8 @@ main() {
   ARGS=()
   parse_flags "$@" || { init_colors; subcmd_help "$cmd"; exit 0; }
   init_colors
+  # No subcommand takes positional args; reject stray ones so typos are loud.
+  [ "${#ARGS[@]}" -gt 0 ] && die "unexpected argument: ${ARGS[0]}" "run '$PROG --help' for usage"
 
   case "$cmd" in
     install)   cmd_install;;
