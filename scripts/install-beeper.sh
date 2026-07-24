@@ -468,7 +468,8 @@ submit_beeper_server() {
       "check 'edison-stdiod status' shows the daemon connected, then re-run: $PROG install"
   fi
   ok "submitted '$SERVER_NAME' (npx $MCP_PKG) for approval"
-  todo "approve '$SERVER_NAME' in the Edison dashboard: ${EW_BACKEND%/}  ->  Servers / requests"
+  todo "approve '$SERVER_NAME' as an admin: ${EW_BACKEND%/}  ->  Servers page (pending requests), or Overview"
+  info "a 'not verified' badge before the token is set is expected and does not block approval"
 }
 
 # ---------------------------------------------------------------------------
@@ -495,8 +496,8 @@ report_beeper_token() {
     todo "in Beeper Desktop: Settings > Developers > Beeper Desktop API > create/copy a token"
     tok=""
   fi
-  todo "in the Edison dashboard, open server '$SERVER_NAME' and set env BEEPER_ACCESS_TOKEN=<token above>"
-  info "the daemon respawns the child with that env once it is saved"
+  todo "after approving '$SERVER_NAME', set the token: $PROG bind-token --ew-api-key <admin-key>"
+  info "the device-scoped add declares no env, so the dashboard shows no field for it; bind-token pushes it via the admin /env route"
   # Keep the token off stdout so it is not captured by accident; print_result
   # only reports whether one was found.
   BEEPER_ACCESS_TOKEN="$tok"
@@ -579,6 +580,44 @@ cmd_token() {
   die "no Beeper access token discovered" "create one in Beeper Desktop > Settings > Developers, or pass --beeper-token <TOKEN>"
 }
 
+# bind-token: push BEEPER_ACCESS_TOKEN onto the (already approved) server via the
+# admin env endpoint. The device-scoped `server add` declares no env, so the
+# dashboard shows no field for it; this admin route (POST /servers/{name}/env)
+# forwards the value to the daemon's env_store and verifies the spawn. Run it
+# AFTER the '$SERVER_NAME' request is approved in the dashboard.
+cmd_bind_token() {
+  step "Binding BEEPER_ACCESS_TOKEN to server '$SERVER_NAME'"
+  [ -n "$EW_API_KEY" ] || die "an admin Edison API key is required to push env" \
+    "pass --ew-api-key edison_... (must belong to an org admin on ${EW_BACKEND})"
+  local tok="$BEEPER_ACCESS_TOKEN"
+  if [ -z "$tok" ] && [ "$DRY_RUN" -eq 0 ]; then
+    if ! tok="$(discover_beeper_token)" || [ -z "$tok" ]; then
+      die "no Beeper token to bind" "pass --beeper-token <TOKEN>, or run '$PROG token' to find one"
+    fi
+  fi
+  local url="${EW_BACKEND%/}/api/v1/servers/${SERVER_NAME}/env"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    run curl -X POST "$url" '(env: BEEPER_ACCESS_TOKEN=<discovered>)'
+    return 0
+  fi
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 60 --connect-timeout 5 -X POST "$url" \
+    -H "Authorization: Bearer ${EW_API_KEY}" -H "Content-Type: application/json" \
+    --data "$(printf '{"env":{"BEEPER_ACCESS_TOKEN":"%s"}}' "$tok")" 2>/dev/null || true)"
+  [ -z "$code" ] && code="000"
+  case "$code" in
+    2*)      ok "bound BEEPER_ACCESS_TOKEN; the backend verified the spawn and pushed it to the device [$(mask_token "$tok")]";;
+    400)     die "the server rejected the env or the spawn did not verify (http 400)" \
+               "confirm the '$SERVER_NAME' request is approved and Beeper Desktop is reachable, then re-run: $PROG bind-token";;
+    401|403) die "not authorized to push env (http ${code})" \
+               "the /env route is admin-only; --ew-api-key must be an org admin on ${EW_BACKEND}";;
+    404)     die "server '$SERVER_NAME' not found (http 404)" \
+               "approve the '$SERVER_NAME' request in the dashboard first, then re-run: $PROG bind-token";;
+    000)     die "could not reach ${url}" "check the network and that the daemon is connected, then re-run: $PROG bind-token";;
+    *)       die "env push returned http ${code}" "check server '$SERVER_NAME' in the dashboard, then re-run: $PROG bind-token";;
+  esac
+}
+
 cmd_mcp_url() { print_result; }
 
 cmd_uninstall() {
@@ -608,6 +647,7 @@ Commands:
   doctor      Check prerequisites and current state (read-only)
   status      Show stdiod daemon + Beeper Desktop API status
   token       Discover a reusable Beeper token to paste into the dashboard
+  bind-token  Push BEEPER_ACCESS_TOKEN onto the approved server (needs --ew-api-key admin)
   mcp-url     Print the Edison MCP URL and client snippet
   uninstall   Withdraw the server and remove the supervisor unit
 
@@ -646,6 +686,8 @@ subcmd_help() {
     install)  log "install - wire the Edison side and print remaining human steps. Idempotent; safe to re-run."
               log "  optional: --ew-backend, --no-open, --install-deps, --yes, --dry-run.";;
     token)    log "token - discover a reusable Beeper token to paste into the dashboard.";;
+    bind-token) log "bind-token - push BEEPER_ACCESS_TOKEN onto the approved server via the admin /env route."
+              log "  needs --ew-api-key <admin-key>. Run after approving the '$SERVER_NAME' request.";;
     mcp-url)  log "mcp-url - print the gateway URL + client snippet. pass --ew-api-key for a ready-to-run snippet. supports --json.";;
     status)   log "status - show stdiod daemon + Beeper Desktop API status.";;
     doctor)   log "doctor - verify prerequisites and current state (read-only).";;
@@ -666,12 +708,13 @@ main() {
   [ "${#ARGS[@]}" -gt 0 ] && die "unexpected argument: ${ARGS[0]}" "run '$PROG --help' for usage"
 
   case "$cmd" in
-    install)   cmd_install;;
-    doctor)    cmd_doctor;;
-    status)    cmd_status;;
-    token)     cmd_token;;
-    mcp-url)   cmd_mcp_url;;
-    uninstall) cmd_uninstall;;
+    install)    cmd_install;;
+    doctor)     cmd_doctor;;
+    status)     cmd_status;;
+    token)      cmd_token;;
+    bind-token) cmd_bind_token;;
+    mcp-url)    cmd_mcp_url;;
+    uninstall)  cmd_uninstall;;
     ""|help|-h|--help) usage;;
     *) die "unknown command: $cmd" "run '$PROG --help' for the command list";;
   esac
